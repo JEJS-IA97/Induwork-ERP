@@ -1,0 +1,599 @@
+// ==============================================================================
+// PRISMA SCHEMA - ERP CORPORATIVO MULTI-TENANT (PostgreSQL)
+// Diseñado para reemplazar Odoo con arquitectura modular, variantes,
+// fichas técnicas, catálogo web/impresión, control de stock y auditoría inmutable.
+// Empresas: Coimsa SpA, Induwork SpA, Inversiones MVI SpA.
+// ==============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  FINANCE
+  INVENTORY_MANAGER
+  VENDEDOR
+  USER
+}
+
+enum CustomerType {
+  CLIENTE
+  PROVEEDOR
+  AMBOS
+}
+
+enum StockMovementType {
+  ENTRADA
+  SALIDA
+  AJUSTE
+}
+
+enum OrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAID
+  CANCELLED
+  SHIPPED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  VOID
+}
+
+enum ProductDocumentType {
+  FICHA_TECNICA
+  MANUAL_USUARIO
+  CERTIFICADO_CALIDAD
+  HOJA_SEGURIDAD
+  GARANTIA
+  OTRO
+}
+
+// ------------------------------------------------------------------------------
+// 1. TENANT (Empresas / Dominios)
+// ------------------------------------------------------------------------------
+
+model Tenant {
+  id          String   @id @default(uuid())
+  code        String   @unique // 'Coimsa', 'induwork', 'inversiones-mvi'
+  name        String   // "Coimsa S.A.", "Induwork SpA", "Inversiones MVI Ltda."
+  domain      String?  // "Coimsa.erp.local", "induwork.erp.local", "inversionesmvi.erp.local"
+  rutOrTaxId  String?  // RUT o Tax ID de la empresa
+  email       String?
+  phone       String?
+  address     String?
+  city        String?
+  country     String?  @default("Chile")
+  logoUrl     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones Multi-Tenant
+  users              User[]
+  customers          Customer[]
+  categories         ProductCategory[]
+  tags               ProductTag[]
+  products           Product[]
+  productVariants    ProductVariant[]
+  productDocuments   ProductDocument[]
+  productImages      ProductImage[]
+  inventoryStocks    InventoryStock[]
+  stockMovements     StockMovement[]
+  orders             Order[]
+  invoices           Invoice[]
+  payments           Payment[]
+  storageFiles       StorageFile[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+
+  @@map("tenants")
+}
+
+// ------------------------------------------------------------------------------
+// 2. USER & ROLE (Usuarios y Permisos RBAC)
+// ------------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(uuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email        String    @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         Role      @default(USER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relaciones
+  refreshTokens  RefreshToken[]
+  stockMovements StockMovement[] @relation("StockMovementCreatedBy")
+  notifications  Notification[]
+  auditLogs      AuditLog[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ------------------------------------------------------------------------------
+// 3. CUSTOMER & SUPPLIER (Clientes y Proveedores)
+// ------------------------------------------------------------------------------
+
+model Customer {
+  id         String       @id @default(uuid())
+  tenantId   String
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type       CustomerType @default(CLIENTE)
+  rutOrTaxId String?
+  name       String       // Razón Social o Nombre Completo
+  email      String?
+  phone      String?
+  address    String?
+  city       String?
+  country    String?      @default("Chile")
+  isActive   Boolean      @default(true)
+  notes      String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  // Relaciones
+  orders   Order[]
+  invoices Invoice[]
+
+  @@index([tenantId])
+  @@index([tenantId, rutOrTaxId])
+  @@map("customers")
+}
+
+// ------------------------------------------------------------------------------
+// 4. CATEGORÍAS Y ETIQUETAS DE PRODUCTOS
+// ------------------------------------------------------------------------------
+
+model ProductCategory {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  parentId    String?
+  parent      ProductCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children    ProductCategory[] @relation("CategoryHierarchy")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@map("product_categories")
+}
+
+model ProductTag {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  color     String?  @default("#3B82F6") // Hex color para UI
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products ProductTagAssignment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("product_tags")
+}
+
+model ProductTagAssignment {
+  productId String
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tagId     String
+  tag       ProductTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+  @@map("product_tag_assignments")
+}
+
+// ------------------------------------------------------------------------------
+// 5. PRODUCT & STOCK (Catálogo, Variantes, Imágenes, Fichas Técnicas e Inventario)
+// ------------------------------------------------------------------------------
+
+model Product {
+  id               String   @id @default(uuid())
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Identificadores y Nomenclaturas
+  sku              String   // Código SKU principal
+  barcode          String?  // Código de barras / EAN13
+  
+  // Nombres diferenciados para Web y Orden/Factura (evita facturas sobreextendidas)
+  name             String   // Nombre estándar / interno
+  webName          String?  // Nombre optimizado para el sitio web
+  orderName        String?  // Nombre conciso para órdenes de venta e impresión de factura
+  
+  // Descripciones diferenciadas
+  description      String?  // Descripción interna
+  webDescription   String?  @db.Text // Descripción enriquecida y extensa para eCommerce/Web
+  orderDescription String?  // Descripción compacta para el PDF de la orden/factura
+  
+  // Precios, Costos e Impuestos
+  price            Decimal  @default(0.0) @db.Decimal(14, 2)
+  cost             Decimal  @default(0.0) @db.Decimal(14, 2)
+  taxRate          Decimal  @default(19.0) @db.Decimal(5, 2) // Porcentaje de IVA (ej: 19%)
+  taxIncluded      Boolean  @default(false)
+  
+  // Imágenes
+  mainImageUrl     String?
+  imageUrls        String[] @default([]) // Array de URLs directas para compatibilidad rápida
+  
+  // Estados de Ciclo de Vida y Publicación
+  isActive         Boolean  @default(true)
+  isArchived       Boolean  @default(false) // Archivar producto sin eliminar historial
+  isPublishedWeb   Boolean  @default(false) // Publicado en catálogo web / tienda online
+  hasVariants      Boolean  @default(false) // Indica si utiliza variantes hijas
+  
+  // Métricas y Contadores
+  salesCount       Int      @default(0) // Contador de unidades vendidas históricamente
+  
+  // Categoría
+  categoryId       String?
+  category         ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Duplicación/Clonación (opcional referencia de origen)
+  clonedFromId     String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relaciones
+  tags             ProductTagAssignment[]
+  galleryImages    ProductImage[]
+  documents        ProductDocument[]
+  variants         ProductVariant[]
+  inventoryStocks  InventoryStock[]
+  stockMovements   StockMovement[]
+  orderItems       OrderItem[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([tenantId, name])
+  @@index([tenantId, barcode])
+  @@index([tenantId, isPublishedWeb, isArchived])
+  @@map("products")
+}
+
+model ProductImage {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url        String
+  altText    String?
+  isMain     Boolean  @default(false) // Imagen principal
+  orderIndex Int      @default(0)     // Orden para el carrusel de imágenes
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([productId])
+  @@map("product_images")
+}
+
+model ProductDocument {
+  id           String              @id @default(uuid())
+  tenantId     String
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  title        String              // Ej: "Ficha Técnica Bomba 5HP", "Manual de Operación"
+  fileUrl      String
+  fileType     String              // Ej: "application/pdf"
+  fileSize     Int                 // Tamaño en bytes
+  documentType ProductDocumentType @default(FICHA_TECNICA)
+  isPublic     Boolean             @default(true) // Visible para descarga de clientes
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([tenantId])
+  @@index([productId])
+  @@map("product_documents")
+}
+
+model ProductVariant {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  sku         String   // SKU específico de la variante (ej: "BOMBA-5HP-ROJO-XL")
+  barcode     String?
+  name        String   // Ej: "Talla L / Color Azul"
+  
+  // Precios específicos de variante (o hereda del padre si es null)
+  price       Decimal? @db.Decimal(14, 2)
+  cost        Decimal? @db.Decimal(14, 2)
+  
+  // Atributos en formato Json (ej: {"color": "Azul", "talla": "L", "voltaje": "380V"})
+  attributes  Json     @default("{}")
+  
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  inventoryStocks InventoryStock[]
+  stockMovements  StockMovement[]
+  orderItems      OrderItem[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([productId])
+  @@map("product_variants")
+}
+
+model InventoryStock {
+  id                String          @id @default(uuid())
+  tenantId          String
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId         String?
+  variant           ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  
+  warehouseLocation String          @default("BODEGA_CENTRAL") // Bodega o ubicación física
+  currentStock      Int             @default(0) // Existencia física disponible
+  reservedStock     Int             @default(0) // Stock comprometido en órdenes pendientes
+  minStock          Int             @default(5) // Alerta de stock mínimo
+  maxStock          Int             @default(1000)
+  
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([tenantId, productId, warehouseLocation, variantId])
+  @@index([tenantId])
+  @@index([productId])
+  @@index([warehouseLocation])
+  @@map("inventory_stocks")
+}
+
+model StockMovement {
+  id                String            @id @default(uuid())
+  tenantId          String
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId         String?
+  variant           ProductVariant?   @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  
+  type              StockMovementType
+  quantity          Int               // Cantidad movida
+  unitCost          Decimal?          @db.Decimal(14, 2)
+  warehouseLocation String            @default("BODEGA_CENTRAL")
+  reference         String            // Ej: "Ajuste manual", "Factura #123", "Orden ORD-0042", "Recepción Proveedor"
+  
+  createdById       String?
+  createdBy         User?             @relation("StockMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([tenantId])
+  @@index([productId])
+  @@index([type])
+  @@map("stock_movements")
+}
+
+// ------------------------------------------------------------------------------
+// 6. ORDER & INVOICE (Ventas y Facturación Electrónica)
+// ------------------------------------------------------------------------------
+
+model Order {
+  id              String      @id @default(uuid())
+  tenantId        String
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderNumber     String      // Ej: "ORD-2026-0001"
+  customerId      String
+  customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status          OrderStatus @default(DRAFT)
+  
+  subtotalAmount  Decimal     @default(0.0) @db.Decimal(14, 2)
+  taxAmount       Decimal     @default(0.0) @db.Decimal(14, 2)
+  discountAmount  Decimal     @default(0.0) @db.Decimal(14, 2)
+  totalAmount     Decimal     @default(0.0) @db.Decimal(14, 2)
+  
+  notes           String?
+  shippingAddress String?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  items           OrderItem[]
+  invoices        Invoice[]
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                 String          @id @default(uuid())
+  orderId            String
+  order              Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId          String
+  product            Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId          String?
+  variant            ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  
+  productName        String          // Nombre congelado al momento de venta
+  productDescription String?         // Descripción para factura
+  
+  quantity           Int             @default(1)
+  unitPrice          Decimal         @db.Decimal(14, 2)
+  unitCost           Decimal?        @db.Decimal(14, 2)
+  taxRate            Decimal         @default(19.0) @db.Decimal(5, 2)
+  subtotal           Decimal         @db.Decimal(14, 2)
+  total              Decimal         @db.Decimal(14, 2)
+  
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@map("order_items")
+}
+
+model Invoice {
+  id             String        @id @default(uuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderId        String?
+  order          Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  customerId     String?
+  customer       Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  
+  invoiceNumber  String        // Ej: "FAC-2026-0001"
+  status         InvoiceStatus @default(DRAFT)
+  paymentStatus  PaymentStatus @default(PENDING)
+  paymentMethod  String?       // "Webpay", "Transferencia", "Efectivo", "Crédito 30 días"
+  
+  pdfUrl         String?
+  xmlUrl         String?
+  issuedAt       DateTime?
+  dueDate        DateTime?
+  
+  subtotalAmount Decimal       @default(0.0) @db.Decimal(14, 2)
+  taxAmount      Decimal       @default(0.0) @db.Decimal(14, 2)
+  totalAmount    Decimal       @default(0.0) @db.Decimal(14, 2)
+  
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  payments       Payment[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId])
+  @@index([orderId])
+  @@index([customerId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@map("invoices")
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount         Decimal       @db.Decimal(14, 2)
+  status         PaymentStatus @default(COMPLETED)
+  paymentMethod  String        @default("TRANSFER")
+  transactionRef String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([tenantId])
+  @@index([invoiceId])
+  @@map("payments")
+}
+
+model StorageFile {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fileName   String
+  fileUrl    String
+  fileType   String
+  fileSize   Int
+  uploadedBy String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("storage_files")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+  @@map("notifications")
+}
+
+// ------------------------------------------------------------------------------
+// 7. AUDIT LOG (Registro de Auditoría Inmutable para Seguridad)
+// ------------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  action     String   // "CREATE_PRODUCT", "UPDATE_PRODUCT", "ARCHIVE_PRODUCT", "CREATE_INVOICE", "STOCK_ADJUSTMENT"
+  entityName String   // "Product", "Order", "Invoice", "StockMovement", "Customer", "User"
+  entityId   String   // ID del registro auditado
+  
+  ipAddress  String?
+  userAgent  String?
+  oldValues  Json?
+  newValues  Json?
+  
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, entityName, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

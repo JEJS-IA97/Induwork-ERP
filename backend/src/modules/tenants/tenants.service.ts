@@ -1,0 +1,86 @@
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
+import { PrismaService } from '../../database/prisma.service';
+import { CreateTenantDto } from './dto/create-tenant.dto';
+
+@Injectable()
+export class TenantsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async findAll() {
+    return this.prisma.tenant.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        domain: true,
+        rutOrTaxId: true,
+        email: true,
+        address: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+        _count: {
+          select: {
+            users: true,
+            products: true,
+            orders: true,
+            customers: true,
+          },
+        },
+      },
+    });
+  }
+
+  async findOne(identifier: string) {
+    const tenant = await this.prisma.tenant.findFirst({
+      where: {
+        OR: [{ id: identifier }, { code: identifier.toLowerCase() }],
+      },
+      include: {
+        _count: {
+          select: {
+            users: true,
+            products: true,
+            orders: true,
+            invoices: true,
+            customers: true,
+          },
+        },
+      },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException(`Empresa '${identifier}' no encontrada.`);
+    }
+
+    return tenant;
+  }
+
+  async create(createTenantDto: CreateTenantDto) {
+    const existing = await this.prisma.tenant.findUnique({
+      where: { code: createTenantDto.code.toLowerCase() },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        `Ya existe una empresa con el código '${createTenantDto.code}'.`,
+      );
+    }
+
+    return this.prisma.tenant.create({
+      data: {
+        code: createTenantDto.code.toLowerCase(),
+        name: createTenantDto.name,
+        rutOrTaxId: createTenantDto.taxId,
+        email: createTenantDto.email,
+        address: createTenantDto.address,
+        phone: createTenantDto.phone,
+      },
+    });
+  }
+}
