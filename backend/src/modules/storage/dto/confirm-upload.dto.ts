@@ -13,7 +13,7 @@ import { StorageCategory } from './generate-presigned-url.dto';
 
 export class ConfirmUploadDto {
   @ApiProperty({
-    example: 'tenants/comisa/PRODUCT_IMAGE/1725100000-uuid-bomba.jpg',
+    example: 'tenants/Coimsa/PRODUCT_IMAGE/1725100000-uuid-bomba.jpg',
     description: 'Key o ruta del archivo en el bucket S3/R2',
   })
   @IsString()
@@ -29,7 +29,7 @@ export class ConfirmUploadDto {
   fileName: string;
 
   @ApiProperty({
-    example: 'https://storage.induwork.cl/tenants/comisa/PRODUCT_IMAGE/1725100000-uuid-bomba.jpg',
+    example: 'https://storage.induwork.cl/tenants/Coimsa/PRODUCT_IMAGE/1725100000-uuid-bomba.jpg',
     description: 'URL pública de acceso al archivo',
   })
   @IsString()
