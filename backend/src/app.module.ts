@@ -26,6 +26,7 @@ import { InvoicingModule } from './modules/invoicing/invoicing.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     StorageModule,
     PaymentsModule,
     NotificationsModule,
+    PricingModule,
   ],
   providers: [
     // Global Throttler Rate Limiting
