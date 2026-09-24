@@ -106,7 +106,7 @@ export class UsersService {
         passwordHash,
         firstName,
         lastName,
-        role: role || Role.VENDEDOR,
+        data: updateUserDto,
         tenantId: tenant.id,
       },
       select: {

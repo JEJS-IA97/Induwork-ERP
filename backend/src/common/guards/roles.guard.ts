@@ -31,7 +31,7 @@ export class RolesGuard implements CanActivate {
     }
 
     // Role ADMIN has system-wide administrative access
-    if (user.role === Role.ADMIN) {
+    if (user.role === Role.SYSTEM_ADMIN) {
       return true;
     }
 

@@ -28,16 +28,18 @@ export class TenantMiddleware implements NestMiddleware {
           },
         });
 
-        if (tenant) {
-          req.tenantId = tenant.id;
-          req.tenantCode = tenant.code;
-        } else {
-          // Set the provided value anyway for downstream handlers to inspect if needed
-          req.tenantCode = normalizedCode;
+        if (!tenant) {
+          throw new BadRequestException(
+            'El tenant indicado no existe o está inactivo.',
+          );
         }
-      } catch (error) {
-        // If DB query fails during startup or unseeded state, set identifier directly
-        req.tenantCode = normalizedCode;
+
+        req.tenantId = tenant.id;
+        req.tenantCode = tenant.code;
+            } catch (error) {
+        throw new BadRequestException(
+          'No fue posible validar el tenant solicitado.',
+        );
       }
     }
 

@@ -33,7 +33,27 @@ import { PricingModule } from './modules/pricing/pricing.module';
     // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env', '.env.example'],
+      envFilePath: ['.env'],
+      validate: (config: Record<string, unknown>) => {
+        const required = [
+          'DATABASE_URL',
+          'JWT_SECRET',
+          'JWT_REFRESH_SECRET',
+        ];
+
+        const missing = required.filter((key) => {
+          const value = config[key];
+          return typeof value !== 'string' || value.trim().length === 0;
+        });
+
+        if (missing.length > 0) {
+          throw new Error(
+            `Faltan variables de entorno obligatorias: ${missing.join(', ')}`,
+          );
+        }
+
+        return config;
+      },
     }),
 
     // Rate Limiting (Throttler)

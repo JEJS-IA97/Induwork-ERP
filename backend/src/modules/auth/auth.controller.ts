@@ -5,14 +5,12 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
-  ApiHeader,
 } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -20,9 +18,7 @@ import { RegisterDto } from './dto/register.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { CurrentTenant } from '../../common/decorators/current-tenant.decorator';
 import { AuthenticatedUser } from '../../common/types/express';
-import { TENANT_HEADER } from '../../common/constants/tenants.constant';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -55,12 +51,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Registrar un nuevo usuario',
     description:
-      'Crea una nueva cuenta de usuario asignada a una empresa (Coimsa, Induwork, Inversiones MVI).',
-  })
-  @ApiHeader({
-    name: TENANT_HEADER,
-    required: false,
-    description: 'Código o ID del tenant si no se envía en el cuerpo',
+      'Crea una nueva cuenta de usuario en el tenant configurado para el registro público.',
   })
   @ApiResponse({
     status: 201,
@@ -70,11 +61,8 @@ export class AuthController {
     status: 409,
     description: 'El correo electrónico ya existe.',
   })
-  async register(
-    @Body() registerDto: RegisterDto,
-    @CurrentTenant('id') tenantId?: string,
-  ) {
-    return this.authService.register(registerDto, tenantId);
+  async register(@Body() registerDto: RegisterDto) {
+    return this.authService.register(registerDto);
   }
 
   @Public()

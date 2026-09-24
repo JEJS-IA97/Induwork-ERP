@@ -1,13 +1,10 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsEmail,
-  IsEnum,
   IsNotEmpty,
-  IsOptional,
   IsString,
   MinLength,
 } from 'class-validator';
-import { Role } from '../../../common/constants/roles.enum';
 
 export class RegisterDto {
   @ApiProperty({
@@ -43,24 +40,4 @@ export class RegisterDto {
   @IsString()
   @IsNotEmpty({ message: 'El apellido es requerido' })
   lastName: string;
-
-  @ApiProperty({
-    enum: Role,
-    example: Role.VENDEDOR,
-    description: 'Rol del usuario en el sistema ERP',
-    default: Role.VENDEDOR,
-  })
-  @IsEnum(Role, {
-    message: 'El rol debe ser uno de: ADMIN, FINANCE, INVENTORY_MANAGER, VENDEDOR',
-  })
-  @IsOptional()
-  role?: Role;
-
-  @ApiPropertyOptional({
-    example: 'induwork',
-    description: 'Código o ID de la empresa/tenant a la que pertenecerá el usuario',
-  })
-  @IsString()
-  @IsOptional()
-  tenantCode?: string;
 }

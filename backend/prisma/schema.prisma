@@ -20,6 +20,7 @@ datasource db {
 // ------------------------------------------------------------------------------
 
 enum Role {
+  SYSTEM_ADMIN
   ADMIN
   FINANCE
   INVENTORY_MANAGER
