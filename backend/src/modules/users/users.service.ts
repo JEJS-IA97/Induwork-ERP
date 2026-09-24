@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../database/prisma.service';
@@ -87,7 +88,11 @@ export class UsersService {
     return user;
   }
 
-  async create(createUserDto: CreateUserDto) {
+  async create(
+    createUserDto: CreateUserDto,
+    requesterTenantId: string,
+    isGlobalAdmin: boolean = false,
+  ) {
     const {
       email,
       password,
@@ -107,15 +112,50 @@ export class UsersService {
       );
     }
 
-    const tenant = await this.prisma.tenant.findFirst({
-      where: {
-        OR: [
-          { code: tenantCode.toLowerCase() },
-          { id: tenantCode },
-        ],
-        isActive: true,
-      },
-    });
+    let tenant;
+
+    if (isGlobalAdmin) {
+      tenant = await this.prisma.tenant.findFirst({
+        where: {
+          OR: [
+            { code: tenantCode.trim().toLowerCase() },
+            { id: tenantCode },
+          ],
+          isActive: true,
+        },
+      });
+    } else {
+      if (!requesterTenantId) {
+        throw new ForbiddenException(
+          'El usuario autenticado no tiene un tenant asignado.',
+        );
+      }
+
+      tenant = await this.prisma.tenant.findFirst({
+        where: {
+          id: requesterTenantId,
+          isActive: true,
+        },
+      });
+
+      if (!tenant) {
+        throw new NotFoundException(
+          'La empresa del usuario autenticado no existe o está inactiva.',
+        );
+      }
+
+      const requestedTenantCode = tenantCode.trim().toLowerCase();
+
+      const matchesCurrentTenant =
+        requestedTenantCode === tenant.id.toLowerCase() ||
+        requestedTenantCode === tenant.code.toLowerCase();
+
+      if (!matchesCurrentTenant) {
+        throw new ForbiddenException(
+          'Un administrador de tenant solo puede crear usuarios dentro de su propia empresa.',
+        );
+      }
+    }
 
     if (!tenant) {
       throw new NotFoundException(
@@ -186,7 +226,6 @@ export class UsersService {
       isGlobalAdmin,
     );
 
-    // Soft-deactivate user
     return this.prisma.user.update({
       where: { id },
       data: { isActive: false },

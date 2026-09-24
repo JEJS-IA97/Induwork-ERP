@@ -76,8 +76,17 @@ export class UsersController {
     status: 201,
     description: 'Usuario creado exitosamente.',
   })
-  async create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+  async create(
+    @Body() createUserDto: CreateUserDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const isGlobalAdmin = user.role === Role.SYSTEM_ADMIN;
+
+    return this.usersService.create(
+      createUserDto,
+      user.tenantId,
+      isGlobalAdmin,
+    );
   }
 
   @Patch(':id')
