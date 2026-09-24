@@ -8,7 +8,7 @@ import { Role } from '../constants/roles.enum';
 
 @Injectable()
 export class TenantAccessGuard implements CanActivate {
-    canActivate(context: ExecutionContext): boolean {
+  canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
     const requestTenantId = request.tenantId;
@@ -17,6 +17,7 @@ export class TenantAccessGuard implements CanActivate {
       return true;
     }
 
+    // Only SYSTEM_ADMIN can access multiple tenants.
     if (user.role === Role.SYSTEM_ADMIN) {
       return true;
     }

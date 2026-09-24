@@ -13,8 +13,12 @@ import { Role } from '../../common/constants/roles.enum';
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(tenantId?: string, isGlobalAdmin: boolean = false) {
+  async findAll(
+    tenantId?: string,
+    isGlobalAdmin: boolean = false,
+  ) {
     const where: any = {};
+
     if (!isGlobalAdmin && tenantId) {
       where.tenantId = tenantId;
     }
@@ -42,8 +46,13 @@ export class UsersService {
     });
   }
 
-  async findOne(id: string, tenantId?: string, isGlobalAdmin: boolean = false) {
+  async findOne(
+    id: string,
+    tenantId?: string,
+    isGlobalAdmin: boolean = false,
+  ) {
     const where: any = { id };
+
     if (!isGlobalAdmin && tenantId) {
       where.tenantId = tenantId;
     }
@@ -70,32 +79,48 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException(`Usuario con ID '${id}' no encontrado.`);
+      throw new NotFoundException(
+        `Usuario con ID '${id}' no encontrado.`,
+      );
     }
 
     return user;
   }
 
   async create(createUserDto: CreateUserDto) {
-    const { email, password, firstName, lastName, role, tenantCode } = createUserDto;
+    const {
+      email,
+      password,
+      firstName,
+      lastName,
+      role,
+      tenantCode,
+    } = createUserDto;
 
     const existing = await this.prisma.user.findUnique({
       where: { email },
     });
 
     if (existing) {
-      throw new ConflictException('El correo ya está registrado en el sistema.');
+      throw new ConflictException(
+        'El correo ya está registrado en el sistema.',
+      );
     }
 
     const tenant = await this.prisma.tenant.findFirst({
       where: {
-        OR: [{ code: tenantCode.toLowerCase() }, { id: tenantCode }],
+        OR: [
+          { code: tenantCode.toLowerCase() },
+          { id: tenantCode },
+        ],
         isActive: true,
       },
     });
 
     if (!tenant) {
-      throw new NotFoundException(`Empresa '${tenantCode}' no encontrada.`);
+      throw new NotFoundException(
+        `Empresa '${tenantCode}' no encontrada.`,
+      );
     }
 
     const passwordHash = await argon2.hash(password);
@@ -106,7 +131,7 @@ export class UsersService {
         passwordHash,
         firstName,
         lastName,
-        data: updateUserDto,
+        role: role || Role.VENDEDOR,
         tenantId: tenant.id,
       },
       select: {
@@ -122,8 +147,17 @@ export class UsersService {
     });
   }
 
-  async update(id: string, updateUserDto: UpdateUserDto, tenantId?: string, isGlobalAdmin: boolean = false) {
-    await this.findOne(id, tenantId, isGlobalAdmin);
+  async update(
+    id: string,
+    updateUserDto: UpdateUserDto,
+    tenantId?: string,
+    isGlobalAdmin: boolean = false,
+  ) {
+    await this.findOne(
+      id,
+      tenantId,
+      isGlobalAdmin,
+    );
 
     return this.prisma.user.update({
       where: { id },
@@ -141,8 +175,16 @@ export class UsersService {
     });
   }
 
-  async remove(id: string, tenantId?: string, isGlobalAdmin: boolean = false) {
-    await this.findOne(id, tenantId, isGlobalAdmin);
+  async remove(
+    id: string,
+    tenantId?: string,
+    isGlobalAdmin: boolean = false,
+  ) {
+    await this.findOne(
+      id,
+      tenantId,
+      isGlobalAdmin,
+    );
 
     // Soft-deactivate user
     return this.prisma.user.update({

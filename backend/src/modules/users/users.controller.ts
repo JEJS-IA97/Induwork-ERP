@@ -6,7 +6,6 @@ import {
   Delete,
   Body,
   Param,
-  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -42,8 +41,12 @@ export class UsersController {
   })
   @ApiResponse({ status: 200, description: 'Lista de usuarios.' })
   async findAll(@CurrentUser() user: AuthenticatedUser) {
-    const isGlobalAdmin = user.role === Role.ADMIN;
-    return this.usersService.findAll(user.tenantId, isGlobalAdmin);
+    const isGlobalAdmin = user.role === Role.SYSTEM_ADMIN;
+
+    return this.usersService.findAll(
+      user.tenantId,
+      isGlobalAdmin,
+    );
   }
 
   @Get(':id')
@@ -55,40 +58,71 @@ export class UsersController {
     @Param('id') id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const isGlobalAdmin = user.role === Role.ADMIN;
-    return this.usersService.findOne(id, user.tenantId, isGlobalAdmin);
+    const isGlobalAdmin = user.role === Role.SYSTEM_ADMIN;
+
+    return this.usersService.findOne(
+      id,
+      user.tenantId,
+      isGlobalAdmin,
+    );
   }
 
   @Post()
   @Roles(Role.ADMIN)
-  @ApiOperation({ summary: 'Crear nuevo usuario en la empresa (Solo ADMIN)' })
-  @ApiResponse({ status: 201, description: 'Usuario creado exitosamente.' })
+  @ApiOperation({
+    summary: 'Crear nuevo usuario en la empresa (Solo ADMIN)',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Usuario creado exitosamente.',
+  })
   async create(@Body() createUserDto: CreateUserDto) {
     return this.usersService.create(createUserDto);
   }
 
   @Patch(':id')
   @Roles(Role.ADMIN)
-  @ApiOperation({ summary: 'Actualizar datos de usuario (Solo ADMIN)' })
-  @ApiResponse({ status: 200, description: 'Usuario actualizado.' })
+  @ApiOperation({
+    summary: 'Actualizar datos de usuario (Solo ADMIN)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Usuario actualizado.',
+  })
   async update(
     @Param('id') id: string,
     @Body() updateUserDto: UpdateUserDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const isGlobalAdmin = user.role === Role.ADMIN;
-    return this.usersService.update(id, updateUserDto, user.tenantId, isGlobalAdmin);
+    const isGlobalAdmin = user.role === Role.SYSTEM_ADMIN;
+
+    return this.usersService.update(
+      id,
+      updateUserDto,
+      user.tenantId,
+      isGlobalAdmin,
+    );
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN)
-  @ApiOperation({ summary: 'Desactivar usuario (Solo ADMIN)' })
-  @ApiResponse({ status: 200, description: 'Usuario desactivado.' })
+  @ApiOperation({
+    summary: 'Desactivar usuario (Solo ADMIN)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Usuario desactivado.',
+  })
   async remove(
     @Param('id') id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const isGlobalAdmin = user.role === Role.ADMIN;
-    return this.usersService.remove(id, user.tenantId, isGlobalAdmin);
+    const isGlobalAdmin = user.role === Role.SYSTEM_ADMIN;
+
+    return this.usersService.remove(
+      id,
+      user.tenantId,
+      isGlobalAdmin,
+    );
   }
 }
