@@ -1,0 +1,26 @@
+[35mREADME.md[m[36m:[m[32m31[m[36m:[m│   ├── inventory/              # [1;31mExiste[mncias en almacén y Kardex de movimientos
+[35mprisma/schema.prisma[m[36m:[m[32m532[m[36m:[m  currentStock      Int             @default(0) // [1;31mExiste[mncia física disponible
+[35msrc/common/middleware/tenant.middleware.ts[m[36m:[m[32m33[m[36m:[m            'El tenant indicado no [1;31mexiste[m o está inactivo.',
+[35msrc/modules/auth/auth.controller.ts[m[36m:[m[32m62[m[36m:[m    description: 'El correo electrónico ya [1;31mexiste[m.',
+[35msrc/modules/auth/auth.service.ts[m[36m:[m[32m101[m[36m:[m        'El tenant configurado para registro público no [1;31mexiste[m o está inactivo.',
+[35msrc/modules/auth/strategies/jwt.strategy.ts[m[36m:[m[32m40[m[36m:[m        'El usuario no [1;31mexiste[m o ha sido desactivado.',
+[35msrc/modules/inventory/inventory.controller.ts[m[36m:[m[32m37[m[36m:[m  @ApiResponse({ status: 200, description: 'Listado de [1;31mexiste[mncias.' })
+[35msrc/modules/notifications/notifications.service.ts[m[36m:[m[32m75[m[36m:[m        'El usuario destinatario no [1;31mexiste[m dentro del tenant actual o está inactivo.',
+[35msrc/modules/orders/orders.service.ts[m[36m:[m[32m118[m[36m:[m          'El cliente indicado no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/payments/payments.service.ts[m[36m:[m[32m252[m[36m:[m              'La orden asociada al pago no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/pricing/services/price-lists.service.ts[m[36m:[m[32m85[m[36m:[m        `Ya [1;31mexiste[m una lista de precios con el código '${dto.code}'.`,
+[35msrc/modules/pricing/services/price-lists.service.ts[m[36m:[m[32m204[m[36m:[m          // Actualizar variantes si [1;31mexiste[mn
+[35msrc/modules/pricing/services/promotions.service.ts[m[36m:[m[32m46[m[36m:[m          `Ya [1;31mexiste[m una promoción con el código '${dto.code}'.`,
+[35msrc/modules/products/products.service.ts[m[36m:[m[32m62[m[36m:[m        `Ya [1;31mexiste[m un producto con el SKU '${createProductDto.sku}' en esta empresa.`,
+[35msrc/modules/purchases/services/goods-receipts.service.ts[m[36m:[m[32m83[m[36m:[m        'La orden de compra indicada no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/purchases/services/goods-receipts.service.ts[m[36m:[m[32m199[m[36m:[m                `El producto '${product.name}' no [1;31mexiste[m en la orden de compra ${purchaseOrder.poNumber}.`,
+[35msrc/modules/purchases/services/purchase-orders.service.ts[m[36m:[m[32m50[m[36m:[m        'El proveedor indicado no [1;31mexiste[m o no tiene perfil de proveedor.',
+[35msrc/modules/purchases/services/three-way-matching.service.ts[m[36m:[m[32m53[m[36m:[m        'El proveedor indicado no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/purchases/services/three-way-matching.service.ts[m[36m:[m[32m72[m[36m:[m        `Ya [1;31mexiste[m una factura registrada con el folio '${dto.billNumber}' para este proveedor.`,
+[35msrc/modules/purchases/services/three-way-matching.service.ts[m[36m:[m[32m150[m[36m:[m          'La orden de compra indicada no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/purchases/services/three-way-matching.service.ts[m[36m:[m[32m215[m[36m:[m          'La recepción indicada no [1;31mexiste[m dentro del tenant actual.',
+[35msrc/modules/purchases/services/three-way-matching.service.ts[m[36m:[m[32m324[m[36m:[m       * Detectar productos recibidos que no [1;31mexiste[mn en la OC.
+[35msrc/modules/storage/storage.service.ts[m[36m:[m[32m364[m[36m:[m            'El producto no [1;31mexiste[m dentro del tenant autenticado.',
+[35msrc/modules/tenants/tenants.controller.ts[m[36m:[m[32m88[m[36m:[m      'El código de la empresa ya [1;31mexiste[m.',
+[35msrc/modules/tenants/tenants.service.ts[m[36m:[m[32m105[m[36m:[m        `Ya [1;31mexiste[m una empresa con el código '${normalizedCode}'.`,
+[35msrc/modules/users/users.service.ts[m[36m:[m[32m143[m[36m:[m          'La empresa del usuario autenticado no [1;31mexiste[m o está inactiva.',

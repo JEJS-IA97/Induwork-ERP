@@ -4,15 +4,22 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { CreateMovementDto, StockMovementType } from './dto/create-movement.dto';
+import {
+  CreateMovementDto,
+  StockMovementType,
+} from './dto/create-movement.dto';
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+  ) {}
 
   async getStockByTenant(tenantId: string) {
     return this.prisma.inventoryStock.findMany({
-      where: { tenantId },
+      where: {
+        tenantId,
+      },
       include: {
         product: {
           select: {
@@ -30,13 +37,17 @@ export class InventoryService {
           },
         },
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: {
+        updatedAt: 'desc',
+      },
     });
   }
 
   async getMovements(tenantId: string) {
     return this.prisma.stockMovement.findMany({
-      where: { tenantId },
+      where: {
+        tenantId,
+      },
       include: {
         product: {
           select: {
@@ -58,7 +69,9 @@ export class InventoryService {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: {
+        createdAt: 'desc',
+      },
       take: 100,
     });
   }
@@ -77,80 +90,133 @@ export class InventoryService {
       reference = 'Movimiento de inventario',
     } = createMovementDto;
 
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, tenantId },
-    });
+    const product =
+      await this.prisma.product.findFirst({
+        where: {
+          id: productId,
+          tenantId,
+        },
+      });
 
     if (!product) {
-      throw new NotFoundException(`Producto no encontrado en esta empresa.`);
+      throw new NotFoundException(
+        'Producto no encontrado en esta empresa.',
+      );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      // Find or create inventory stock record
-      let stock = await tx.inventoryStock.findFirst({
-        where: {
-          tenantId,
-          productId,
-          warehouseLocation,
-          variantId: variantId || null,
-        },
-      });
+    let resolvedVariantId: string | null =
+      variantId || null;
 
-      if (!stock) {
-        stock = await tx.inventoryStock.create({
-          data: {
+    if (variantId) {
+      const variant =
+        await this.prisma.productVariant.findFirst({
+          where: {
+            id: variantId,
             tenantId,
             productId,
-            variantId: variantId || null,
-            warehouseLocation,
-            currentStock: 0,
+            isActive: true,
+          },
+          select: {
+            id: true,
           },
         });
+
+      if (!variant) {
+        throw new NotFoundException(
+          'La variante no pertenece al producto y tenant actuales, o está inactiva.',
+        );
       }
 
-      let newStock = stock.currentStock;
+      resolvedVariantId = variant.id;
+    }
 
-      if (type === StockMovementType.ENTRADA) {
-        newStock += quantity;
-      } else if (type === StockMovementType.SALIDA) {
-        if (stock.currentStock < quantity) {
-          throw new BadRequestException(
-            `Stock insuficiente en bodega '${warehouseLocation}'. Stock actual: ${stock.currentStock}, solicitado: ${quantity}`,
-          );
+    return this.prisma.$transaction(
+      async (tx) => {
+        let stock =
+          await tx.inventoryStock.findFirst({
+            where: {
+              tenantId,
+              productId,
+              warehouseLocation,
+              variantId: resolvedVariantId,
+            },
+          });
+
+        if (!stock) {
+          stock =
+            await tx.inventoryStock.create({
+              data: {
+                tenantId,
+                productId,
+                variantId: resolvedVariantId,
+                warehouseLocation,
+                currentStock: 0,
+              },
+            });
         }
-        newStock -= quantity;
-      } else if (type === StockMovementType.AJUSTE) {
-        newStock = quantity;
-      }
 
-      // Update stock
-      await tx.inventoryStock.update({
-        where: { id: stock.id },
-        data: { currentStock: newStock },
-      });
+        let newStock =
+          stock.currentStock;
 
-      // Record movement history
-      const movement = await tx.stockMovement.create({
-        data: {
-          tenantId,
-          productId,
-          variantId: variantId || null,
-          createdById: userId,
-          type: type as any,
-          quantity,
-          warehouseLocation,
-          reference,
-        },
-      });
+        if (
+          type ===
+          StockMovementType.ENTRADA
+        ) {
+          newStock += quantity;
+        } else if (
+          type ===
+          StockMovementType.SALIDA
+        ) {
+          if (
+            stock.currentStock <
+            quantity
+          ) {
+            throw new BadRequestException(
+              `Stock insuficiente en bodega '${warehouseLocation}'. Stock actual: ${stock.currentStock}, solicitado: ${quantity}`,
+            );
+          }
 
-      return {
-        movement,
-        updatedStock: {
-          warehouseLocation,
-          previousStock: stock.currentStock,
-          currentStock: newStock,
-        },
-      };
-    });
+          newStock -= quantity;
+        } else if (
+          type ===
+          StockMovementType.AJUSTE
+        ) {
+          newStock = quantity;
+        }
+
+        await tx.inventoryStock.update({
+          where: {
+            id: stock.id,
+          },
+          data: {
+            currentStock: newStock,
+          },
+        });
+
+        const movement =
+          await tx.stockMovement.create({
+            data: {
+              tenantId,
+              productId,
+              variantId: resolvedVariantId,
+              createdById: userId,
+              type: type as any,
+              quantity,
+              warehouseLocation,
+              reference,
+            },
+          });
+
+        return {
+          movement,
+          updatedStock: {
+            warehouseLocation,
+            previousStock:
+              stock.currentStock,
+            currentStock: newStock,
+          },
+        };
+      },
+    );
   }
 }

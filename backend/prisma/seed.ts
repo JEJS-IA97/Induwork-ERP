@@ -1,13 +1,90 @@
-import { PrismaClient, Role, CustomerType, StockMovementType, ProductDocumentType } from '@prisma/client';
+import {
+  PrismaClient,
+  Role,
+  CustomerType,
+  StockMovementType,
+  ProductDocumentType,
+} from '@prisma/client';
 import * as argon2 from 'argon2';
 
 const prisma = new PrismaClient();
 
-async function main() {
-  console.log('🌱 Iniciando siembra (Seeding) de Base de Datos para ERP Multi-Tenant...');
+function getRequiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
 
-  const defaultPassword = 'AdminPassword2026!';
-  const passwordHash = await argon2.hash(defaultPassword);
+  if (!value) {
+    throw new Error(
+      `La variable de entorno ${name} es obligatoria para ejecutar el seed.`,
+    );
+  }
+
+  return value;
+}
+
+function getEnv(name: string, fallback: string): string {
+  return process.env[name]?.trim() || fallback;
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+async function main() {
+  console.log(
+    '🌱 Iniciando siembra (Seeding) de Base de Datos para ERP Multi-Tenant...',
+  );
+
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (
+    isProduction &&
+    process.env.ALLOW_PRODUCTION_SEED !== 'true'
+  ) {
+    throw new Error(
+      'El seed está bloqueado en producción. Configure ALLOW_PRODUCTION_SEED=true únicamente si la siembra es intencional.',
+    );
+  }
+
+  const defaultPassword = getRequiredEnv('SEED_ADMIN_PASSWORD');
+
+  const systemAdminPassword = getEnv(
+    'SEED_SYSTEM_ADMIN_PASSWORD',
+    defaultPassword,
+  );
+
+  if (defaultPassword.length < 12) {
+    throw new Error(
+      'SEED_ADMIN_PASSWORD debe tener al menos 12 caracteres.',
+    );
+  }
+
+  if (systemAdminPassword.length < 12) {
+    throw new Error(
+      'SEED_SYSTEM_ADMIN_PASSWORD debe tener al menos 12 caracteres.',
+    );
+  }
+
+  const adminPasswordHash = await argon2.hash(defaultPassword);
+  const systemAdminPasswordHash = await argon2.hash(
+    systemAdminPassword,
+  );
+
+  /*
+   * IMPORTANTE:
+   *
+   * Los correos de los administradores iniciales no forman parte de la
+   * arquitectura del ERP. Son solamente la configuración inicial de esta
+   * instalación.
+   *
+   * Pueden modificarse mediante variables de entorno al instalar el sistema
+   * para otra empresa/cliente.
+   */
+  const systemAdminEmail = normalizeEmail(
+    getEnv(
+      'SEED_SYSTEM_ADMIN_EMAIL',
+      'soporte@induwork.cl',
+    ),
+  );
 
   const initialTenants = [
     {
@@ -20,6 +97,12 @@ async function main() {
       address: 'Valentin Letelier 1373 of 202, Santiago',
       city: 'Santiago',
       country: 'Chile',
+      adminEmail: normalizeEmail(
+        getEnv(
+          'SEED_COIMSA_ADMIN_EMAIL',
+          'administracion@coimsaspa.cl',
+        ),
+      ),
     },
     {
       code: 'induwork',
@@ -31,6 +114,12 @@ async function main() {
       address: 'Antonio Bellet 193, Oficina 1210, Providencia',
       city: 'Santiago',
       country: 'Chile',
+      adminEmail: normalizeEmail(
+        getEnv(
+          'SEED_INDUWORK_ADMIN_EMAIL',
+          'gerencia@induwork.cl',
+        ),
+      ),
     },
     {
       code: 'inversiones-mvi',
@@ -42,13 +131,35 @@ async function main() {
       address: 'Antonio Bellet 193, Oficina 1210, Providencia',
       city: 'Santiago',
       country: 'Chile',
+      adminEmail: normalizeEmail(
+        getEnv(
+          'SEED_INVERSIONES_MVI_ADMIN_EMAIL',
+          'administracion@inversionesmvi.cl',
+        ),
+      ),
     },
   ];
 
+  const tenantsByCode: Record<
+    string,
+    {
+      id: string;
+      code: string;
+      name: string;
+    }
+  > = {};
+
+  /*
+   * ==========================================================================
+   * 1. CREAR / ACTUALIZAR EMPRESAS
+   * ==========================================================================
+   */
+
   for (const tenantData of initialTenants) {
-    // 1. Crear / Actualizar Empresa Tenant
     const tenant = await prisma.tenant.upsert({
-      where: { code: tenantData.code },
+      where: {
+        code: tenantData.code,
+      },
       update: {
         name: tenantData.name,
         domain: tenantData.domain,
@@ -59,50 +170,154 @@ async function main() {
         city: tenantData.city,
         country: tenantData.country,
       },
-      create: tenantData,
+      create: {
+        code: tenantData.code,
+        name: tenantData.name,
+        domain: tenantData.domain,
+        rutOrTaxId: tenantData.rutOrTaxId,
+        email: tenantData.email,
+        phone: tenantData.phone,
+        address: tenantData.address,
+        city: tenantData.city,
+        country: tenantData.country,
+      },
     });
 
-    console.log(`\n🏢 Empresa Registrada: ${tenant.name} (${tenant.code}) -> ID: ${tenant.id}`);
+    tenantsByCode[tenant.code] = {
+      id: tenant.id,
+      code: tenant.code,
+      name: tenant.name,
+    };
 
-    // 2. Crear Administrador por defecto
-    const adminEmail = `admin@${tenant.code}.erp.local`;
+    console.log(
+      `\n🏢 Empresa registrada: ${tenant.name} (${tenant.code}) -> ID: ${tenant.id}`,
+    );
+  }
+
+  /*
+   * ==========================================================================
+   * 2. CREAR / ACTUALIZAR SYSTEM_ADMIN GLOBAL
+   * ==========================================================================
+   *
+   * El schema actual obliga a que User.tenantId tenga valor.
+   * SYSTEM_ADMIN tiene permisos globales y RolesGuard ya ignora el tenant
+   * para este rol, por lo que usamos Induwork como tenant técnico de referencia.
+   *
+   * Esto no limita al SYSTEM_ADMIN a Induwork.
+   */
+
+  const systemAdminTenant = tenantsByCode.induwork;
+
+  if (!systemAdminTenant) {
+    throw new Error(
+      'No se encontró el tenant de referencia "induwork" para SYSTEM_ADMIN.',
+    );
+  }
+
+  const systemAdmin = await prisma.user.upsert({
+    where: {
+      email: systemAdminEmail,
+    },
+    update: {
+      role: Role.SYSTEM_ADMIN,
+      passwordHash: systemAdminPasswordHash,
+      tenantId: systemAdminTenant.id,
+      firstName: 'Super',
+      lastName: 'Administrador',
+      isActive: true,
+    },
+    create: {
+      email: systemAdminEmail,
+      passwordHash: systemAdminPasswordHash,
+      firstName: 'Super',
+      lastName: 'Administrador',
+      role: Role.SYSTEM_ADMIN,
+      tenantId: systemAdminTenant.id,
+      isActive: true,
+    },
+  });
+
+  console.log(
+    `\n👑 SYSTEM_ADMIN configurado: ${systemAdmin.email}`,
+  );
+
+  /*
+   * ==========================================================================
+   * 3. DATOS INICIALES DE CADA TENANT
+   * ==========================================================================
+   */
+
+  for (const tenantData of initialTenants) {
+    const tenant = tenantsByCode[tenantData.code];
+
+    if (!tenant) {
+      throw new Error(
+        `No se encontró información para el tenant '${tenantData.code}'.`,
+      );
+    }
+
+    /*
+     * ------------------------------------------------------------------------
+     * 3.1 ADMINISTRADOR DE EMPRESA
+     * ------------------------------------------------------------------------
+     *
+     * Este usuario tiene rol ADMIN y queda limitado al tenant correspondiente.
+     * El SYSTEM_ADMIN puede crear estos usuarios porque RolesGuard reconoce
+     * SYSTEM_ADMIN como rol global.
+     */
+
     const adminUser = await prisma.user.upsert({
-      where: { email: adminEmail },
+      where: {
+        email: tenantData.adminEmail,
+      },
       update: {
         role: Role.ADMIN,
-        passwordHash,
+        passwordHash: adminPasswordHash,
         tenantId: tenant.id,
+        firstName: 'Administrador',
+        lastName: tenant.name,
+        isActive: true,
       },
       create: {
-        email: adminEmail,
-        passwordHash,
+        email: tenantData.adminEmail,
+        passwordHash: adminPasswordHash,
         firstName: 'Administrador',
         lastName: tenant.name,
         role: Role.ADMIN,
         tenantId: tenant.id,
+        isActive: true,
       },
     });
 
-    console.log(`   👤 Admin: ${adminUser.email} (Clave: ${defaultPassword})`);
+    console.log(
+      `   👤 ADMIN configurado: ${adminUser.email} -> ${tenant.name}`,
+    );
 
-    // 3. Crear Categorías de Producto de ejemplo
-    const maquinariaCategory = await prisma.productCategory.upsert({
-      where: {
-        tenantId_slug: {
-          tenantId: tenant.id,
-          slug: 'maquinaria-industrial',
+    /*
+     * ------------------------------------------------------------------------
+     * 3.2 CATEGORÍAS DE PRODUCTO
+     * ------------------------------------------------------------------------
+     */
+
+    const maquinariaCategory =
+      await prisma.productCategory.upsert({
+        where: {
+          tenantId_slug: {
+            tenantId: tenant.id,
+            slug: 'maquinaria-industrial',
+          },
         },
-      },
-      update: {},
-      create: {
-        tenantId: tenant.id,
-        name: 'Maquinaria Industrial',
-        slug: 'maquinaria-industrial',
-        description: 'Equipos pesados y bombas para minería e industria',
-      },
-    });
+        update: {},
+        create: {
+          tenantId: tenant.id,
+          name: 'Maquinaria Industrial',
+          slug: 'maquinaria-industrial',
+          description:
+            'Equipos pesados y bombas para minería e industria',
+        },
+      });
 
-    const eppCategory = await prisma.productCategory.upsert({
+    await prisma.productCategory.upsert({
       where: {
         tenantId_slug: {
           tenantId: tenant.id,
@@ -114,11 +329,17 @@ async function main() {
         tenantId: tenant.id,
         name: 'Equipos de Protección Personal (EPP)',
         slug: 'equipos-seguridad-epp',
-        description: 'Cascos, calzado de seguridad, guantes y arneses',
+        description:
+          'Cascos, calzado de seguridad, guantes y arneses',
       },
     });
 
-    // 4. Crear Etiquetas (Tags)
+    /*
+     * ------------------------------------------------------------------------
+     * 3.3 ETIQUETAS
+     * ------------------------------------------------------------------------
+     */
+
     const tagDestacado = await prisma.productTag.upsert({
       where: {
         tenantId_name: {
@@ -134,7 +355,7 @@ async function main() {
       },
     });
 
-    const tagOferta = await prisma.productTag.upsert({
+    await prisma.productTag.upsert({
       where: {
         tenantId_name: {
           tenantId: tenant.id,
@@ -149,7 +370,12 @@ async function main() {
       },
     });
 
-    // 5. Crear Cliente y Proveedor de prueba
+    /*
+     * ------------------------------------------------------------------------
+     * 3.4 CLIENTE DE PRUEBA
+     * ------------------------------------------------------------------------
+     */
+
     const sampleCustomer = await prisma.customer.create({
       data: {
         tenantId: tenant.id,
@@ -163,8 +389,16 @@ async function main() {
       },
     });
 
-    // 6. Crear Producto Completo con variantes, imágenes, ficha técnica y stock
+    void sampleCustomer;
+
+    /*
+     * ------------------------------------------------------------------------
+     * 3.5 PRODUCTO DE PRUEBA
+     * ------------------------------------------------------------------------
+     */
+
     const productSku = `PROD-${tenant.code.toUpperCase()}-001`;
+
     const sampleProduct = await prisma.product.upsert({
       where: {
         tenantId_sku: {
@@ -178,16 +412,22 @@ async function main() {
         sku: productSku,
         barcode: '7801234567890',
         name: 'Bomba Centrífuga Sumergible 10HP Trifásica',
-        webName: 'Bomba Centrífuga Sumergible Industrial 10HP de Alto Rendimiento para Minería y Construcción',
-        orderName: 'Bomba Centrífuga Sumergible 10HP 380V',
-        description: 'Bomba sumergible de lodos para faenas mineras y drenaje industrial.',
-        webDescription: 'Nuestra bomba centrífuga sumergible industrial de 10HP ofrece un caudal máximo de 120 m³/h y una altura de elevación de hasta 35 metros. Fabricada en aleación de hierro dúctil y cromo resistente a la abrasión con sello mecánico dual de carburo de silicio.',
-        orderDescription: 'Bomba Sumergible 10HP 380V / 120m3/h / Eje Inox',
+        webName:
+          'Bomba Centrífuga Sumergible Industrial 10HP de Alto Rendimiento para Minería y Construcción',
+        orderName:
+          'Bomba Centrífuga Sumergible 10HP 380V',
+        description:
+          'Bomba sumergible de lodos para faenas mineras y drenaje industrial.',
+        webDescription:
+          'Nuestra bomba centrífuga sumergible industrial de 10HP ofrece un caudal máximo de 120 m³/h y una altura de elevación de hasta 35 metros. Fabricada en aleación de hierro dúctil y cromo resistente a la abrasión con sello mecánico dual de carburo de silicio.',
+        orderDescription:
+          'Bomba Sumergible 10HP 380V / 120m3/h / Eje Inox',
         price: 1850000.0,
         cost: 1120000.0,
         taxRate: 19.0,
         taxIncluded: false,
-        mainImageUrl: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80',
+        mainImageUrl:
+          'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80',
         imageUrls: [
           'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80',
           'https://images.unsplash.com/photo-1581092335397-9583fe92d232?auto=format&fit=crop&w=800&q=80',
@@ -201,7 +441,12 @@ async function main() {
       },
     });
 
-    // Asignar Etiqueta
+    /*
+     * ------------------------------------------------------------------------
+     * 3.6 ETIQUETA DEL PRODUCTO
+     * ------------------------------------------------------------------------
+     */
+
     await prisma.productTagAssignment.upsert({
       where: {
         productId_tagId: {
@@ -216,7 +461,12 @@ async function main() {
       },
     });
 
-    // Imágenes para Carrusel
+    /*
+     * ------------------------------------------------------------------------
+     * 3.7 IMÁGENES
+     * ------------------------------------------------------------------------
+     */
+
     await prisma.productImage.createMany({
       data: [
         {
@@ -231,67 +481,103 @@ async function main() {
           tenantId: tenant.id,
           productId: sampleProduct.id,
           url: 'https://images.unsplash.com/photo-1581092335397-9583fe92d232?auto=format&fit=crop&w=800&q=80',
-          altText: 'Conexiones hidráulicas y panel de control',
+          altText:
+            'Conexiones hidráulicas y panel de control',
           isMain: false,
           orderIndex: 1,
         },
       ],
     });
 
-    // Documento Técnico adjunto (Ficha Técnica / Manual)
+    /*
+     * ------------------------------------------------------------------------
+     * 3.8 DOCUMENTO TÉCNICO
+     * ------------------------------------------------------------------------
+     *
+     * Se mantiene privado por defecto en esta configuración inicial.
+     */
+
     await prisma.productDocument.create({
       data: {
         tenantId: tenant.id,
         productId: sampleProduct.id,
-        title: 'Ficha Técnica Oficial - Bomba Sumergible 10HP Serie IND',
-        fileUrl: 'https://storage.induwork.cl/fichas/FT-BOMBA-10HP-2026.pdf',
+        title:
+          'Ficha Técnica Oficial - Bomba Sumergible 10HP Serie IND',
+        fileUrl:
+          'https://storage.induwork.cl/fichas/FT-BOMBA-10HP-2026.pdf',
         fileType: 'application/pdf',
         fileSize: 2450890,
         documentType: ProductDocumentType.FICHA_TECNICA,
-        isPublic: true,
+        isPublic: false,
       },
     });
 
-    // Variantes (380V vs 440V)
-    const variant380 = await prisma.productVariant.upsert({
-      where: {
-        tenantId_sku: {
+    /*
+     * ------------------------------------------------------------------------
+     * 3.9 VARIANTE 380V
+     * ------------------------------------------------------------------------
+     */
+
+    const variant380 =
+      await prisma.productVariant.upsert({
+        where: {
+          tenantId_sku: {
+            tenantId: tenant.id,
+            sku: `${productSku}-380V`,
+          },
+        },
+        update: {},
+        create: {
           tenantId: tenant.id,
+          productId: sampleProduct.id,
           sku: `${productSku}-380V`,
+          name: 'Trifásica 380V Standard',
+          price: 1850000.0,
+          cost: 1120000.0,
+          attributes: {
+            voltaje: '380V',
+            frecuencia: '50Hz',
+            proteccion: 'IP68',
+          },
         },
-      },
-      update: {},
-      create: {
-        tenantId: tenant.id,
-        productId: sampleProduct.id,
-        sku: `${productSku}-380V`,
-        name: 'Trifásica 380V Standard',
-        price: 1850000.0,
-        cost: 1120000.0,
-        attributes: { voltaje: '380V', frecuencia: '50Hz', proteccion: 'IP68' },
-      },
-    });
+      });
 
-    const variant440 = await prisma.productVariant.upsert({
-      where: {
-        tenantId_sku: {
+    /*
+     * ------------------------------------------------------------------------
+     * 3.10 VARIANTE 440V
+     * ------------------------------------------------------------------------
+     */
+
+    const variant440 =
+      await prisma.productVariant.upsert({
+        where: {
+          tenantId_sku: {
+            tenantId: tenant.id,
+            sku: `${productSku}-440V`,
+          },
+        },
+        update: {},
+        create: {
           tenantId: tenant.id,
+          productId: sampleProduct.id,
           sku: `${productSku}-440V`,
+          name: 'Trifásica 440V Minera Reforzada',
+          price: 1980000.0,
+          cost: 1210000.0,
+          attributes: {
+            voltaje: '440V',
+            frecuencia: '60Hz',
+            proteccion: 'IP68 Heavy Duty',
+          },
         },
-      },
-      update: {},
-      create: {
-        tenantId: tenant.id,
-        productId: sampleProduct.id,
-        sku: `${productSku}-440V`,
-        name: 'Trifásica 440V Minera Reforzada',
-        price: 1980000.0,
-        cost: 1210000.0,
-        attributes: { voltaje: '440V', frecuencia: '60Hz', proteccion: 'IP68 Heavy Duty' },
-      },
-    });
+      });
 
-    // Existencias de Stock por Almacén y Variante
+    /*
+     * ------------------------------------------------------------------------
+     * 3.11 STOCK 380V
+     * ------------------------------------------------------------------------
+     */
+
     await prisma.inventoryStock.upsert({
       where: {
         tenantId_productId_warehouseLocation_variantId: {
@@ -313,6 +599,12 @@ async function main() {
         maxStock: 50,
       },
     });
+
+    /*
+     * ------------------------------------------------------------------------
+     * 3.12 STOCK 440V
+     * ------------------------------------------------------------------------
+     */
 
     await prisma.inventoryStock.upsert({
       where: {
@@ -336,7 +628,12 @@ async function main() {
       },
     });
 
-    // Movimiento Inicial de Inventario (Kardex)
+    /*
+     * ------------------------------------------------------------------------
+     * 3.13 MOVIMIENTO INICIAL DE INVENTARIO
+     * ------------------------------------------------------------------------
+     */
+
     await prisma.stockMovement.create({
       data: {
         tenantId: tenant.id,
@@ -346,12 +643,18 @@ async function main() {
         quantity: 25,
         unitCost: 1120000.0,
         warehouseLocation: 'BODEGA_CENTRAL',
-        reference: 'Recepción Inicial de Importación Lote #2026-A1',
+        reference:
+          'Recepción Inicial de Importación Lote #2026-A1',
         createdById: adminUser.id,
       },
     });
 
-    // Registro de Auditoría Inicial
+    /*
+     * ------------------------------------------------------------------------
+     * 3.14 AUDITORÍA INICIAL
+     * ------------------------------------------------------------------------
+     */
+
     await prisma.auditLog.create({
       data: {
         tenantId: tenant.id,
@@ -368,16 +671,44 @@ async function main() {
       },
     });
 
-    console.log(`   📦 Producto de ejemplo creado: ${sampleProduct.name} (SKU: ${sampleProduct.sku})`);
-    console.log(`   📑 Ficha técnica, variantes (380V / 440V) y stock inicial en BODEGA_CENTRAL configurados.`);
+    console.log(
+      `   📦 Producto de ejemplo creado: ${sampleProduct.name} (SKU: ${sampleProduct.sku})`,
+    );
+
+    console.log(
+      '   📑 Ficha técnica, variantes (380V / 440V) y stock inicial en BODEGA_CENTRAL configurados.',
+    );
   }
 
-  console.log('\n✅ Proceso de siembra (Seeding) finalizado exitosamente.');
+  /*
+   * ==========================================================================
+   * 4. RESUMEN
+   * ==========================================================================
+   */
+
+  console.log('\n✅ Proceso de siembra finalizado exitosamente.');
+  console.log('\n🔐 Usuarios iniciales configurados:');
+  console.log(
+    `   👑 SYSTEM_ADMIN: ${systemAdmin.email}`,
+  );
+
+  for (const tenantData of initialTenants) {
+    console.log(
+      `   🏢 ${tenantData.name}: ADMIN -> ${tenantData.adminEmail}`,
+    );
+  }
+
+  console.log(
+    '\nℹ️ Las contraseñas fueron tomadas exclusivamente desde variables de entorno.',
+  );
 }
 
 main()
-  .catch((e) => {
-    console.error('❌ Error durante la siembra de base de datos:', e);
+  .catch((error) => {
+    console.error(
+      '\n❌ Error durante la siembra de base de datos:',
+      error,
+    );
     process.exit(1);
   })
   .finally(async () => {

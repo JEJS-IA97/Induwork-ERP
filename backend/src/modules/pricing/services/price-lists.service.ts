@@ -2,7 +2,6 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
-  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
@@ -17,11 +16,87 @@ export class PriceListsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Listar todas las listas de precios de la empresa
+   * Verifica que una lista de precios pertenezca al tenant actual.
+   */
+  private async validatePriceList(
+    priceListId: string,
+    tenantId: string,
+  ) {
+    const priceList = await this.prisma.priceList.findFirst({
+      where: {
+        id: priceListId,
+        tenantId,
+      },
+    });
+
+    if (!priceList) {
+      throw new NotFoundException(
+        `La lista de precios '${priceListId}' no pertenece al tenant actual.`,
+      );
+    }
+
+    return priceList;
+  }
+
+  /**
+   * Verifica que un producto pertenezca al tenant actual.
+   */
+  private async validateProduct(
+    productId: string,
+    tenantId: string,
+  ) {
+    const product = await this.prisma.product.findFirst({
+      where: {
+        id: productId,
+        tenantId,
+        isActive: true,
+        isArchived: false,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException(
+        `El producto '${productId}' no pertenece al tenant actual o está inactivo.`,
+      );
+    }
+
+    return product;
+  }
+
+  /**
+   * Verifica que una variante pertenezca al tenant y al producto indicado.
+   */
+  private async validateVariant(
+    variantId: string,
+    productId: string,
+    tenantId: string,
+  ) {
+    const variant = await this.prisma.productVariant.findFirst({
+      where: {
+        id: variantId,
+        tenantId,
+        productId,
+        isActive: true,
+      },
+    });
+
+    if (!variant) {
+      throw new NotFoundException(
+        `La variante '${variantId}' no pertenece al producto indicado o al tenant actual.`,
+      );
+    }
+
+    return variant;
+  }
+
+  /**
+   * Listar todas las listas de precios de la empresa.
    */
   async findAll(tenantId: string) {
     return this.prisma.priceList.findMany({
-      where: { tenantId },
+      where: {
+        tenantId,
+      },
       include: {
         _count: {
           select: {
@@ -30,16 +105,24 @@ export class PriceListsService {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: {
+        createdAt: 'desc',
+      },
     });
   }
 
   /**
-   * Obtener detalle de una lista de precios con todos sus productos e ítems
+   * Obtener detalle de una lista de precios con todos sus productos e ítems.
    */
-  async findOne(id: string, tenantId: string) {
+  async findOne(
+    id: string,
+    tenantId: string,
+  ) {
     const priceList = await this.prisma.priceList.findFirst({
-      where: { id, tenantId },
+      where: {
+        id,
+        tenantId,
+      },
       include: {
         items: {
           include: {
@@ -66,18 +149,26 @@ export class PriceListsService {
     });
 
     if (!priceList) {
-      throw new NotFoundException(`Lista de precios con ID '${id}' no encontrada.`);
+      throw new NotFoundException(
+        `Lista de precios con ID '${id}' no encontrada.`,
+      );
     }
 
     return priceList;
   }
 
   /**
-   * Crear nueva lista de precios
+   * Crear nueva lista de precios.
    */
-  async create(dto: CreatePriceListDto, tenantId: string) {
+  async create(
+    dto: CreatePriceListDto,
+    tenantId: string,
+  ) {
     const existing = await this.prisma.priceList.findFirst({
-      where: { tenantId, code: dto.code.toUpperCase() },
+      where: {
+        tenantId,
+        code: dto.code.toUpperCase(),
+      },
     });
 
     if (existing) {
@@ -87,10 +178,14 @@ export class PriceListsService {
     }
 
     if (dto.isDefault) {
-      // Desmarcar lista por defecto previa
       await this.prisma.priceList.updateMany({
-        where: { tenantId, isDefault: true },
-        data: { isDefault: false },
+        where: {
+          tenantId,
+          isDefault: true,
+        },
+        data: {
+          isDefault: false,
+        },
       });
     }
 
@@ -102,14 +197,20 @@ export class PriceListsService {
         description: dto.description,
         currency: dto.currency || 'CLP',
         isDefault: dto.isDefault || false,
-        startDate: dto.startDate ? new Date(dto.startDate) : null,
-        endDate: dto.endDate ? new Date(dto.endDate) : null,
+        startDate: dto.startDate
+          ? new Date(dto.startDate)
+          : null,
+        endDate: dto.endDate
+          ? new Date(dto.endDate)
+          : null,
       },
     });
   }
 
   /**
-   * Asignar o modificar precio de un producto en una lista específica
+   * Asignar o modificar precio de un producto en una lista específica.
+   *
+   * Todas las entidades relacionadas se validan dentro del tenant actual.
    */
   async assignItemPrice(
     priceListId: string,
@@ -119,7 +220,23 @@ export class PriceListsService {
     percentAdjustment: number | null,
     tenantId: string,
   ) {
-    await this.findOne(priceListId, tenantId);
+    await this.validatePriceList(
+      priceListId,
+      tenantId,
+    );
+
+    const product = await this.validateProduct(
+      productId,
+      tenantId,
+    );
+
+    if (variantId) {
+      await this.validateVariant(
+        variantId,
+        product.id,
+        tenantId,
+      );
+    }
 
     return this.prisma.priceListItem.upsert({
       where: {
@@ -127,7 +244,7 @@ export class PriceListsService {
           tenantId,
           priceListId,
           productId,
-          variantId: variantId || (null as any),
+          variantId,
           minQuantity: 1,
         },
       },
@@ -148,8 +265,7 @@ export class PriceListsService {
   }
 
   /**
-   * Modificación masiva de precios (aumento %, descuento %, fijación masiva)
-   * Puede aplicarse sobre el catálogo general o sobre una lista de precios específica.
+   * Modificación masiva de precios.
    */
   async bulkPriceAdjustment(
     dto: BulkPriceAdjustmentDto,
@@ -165,17 +281,48 @@ export class PriceListsService {
       applyToBaseProducts = false,
     } = dto;
 
-    const whereProduct: any = { tenantId, isActive: true };
-    if (categoryId) whereProduct.categoryId = categoryId;
-    if (productIds && productIds.length > 0) whereProduct.id = { in: productIds };
+    if (priceListId) {
+      await this.validatePriceList(
+        priceListId,
+        tenantId,
+      );
+    }
+
+    const whereProduct: {
+      tenantId: string;
+      isActive: boolean;
+      isArchived: boolean;
+      categoryId?: string;
+      id?: {
+        in: string[];
+      };
+    } = {
+      tenantId,
+      isActive: true,
+      isArchived: false,
+    };
+
+    if (categoryId) {
+      whereProduct.categoryId = categoryId;
+    }
+
+    if (productIds && productIds.length > 0) {
+      whereProduct.id = {
+        in: productIds,
+      };
+    }
 
     const products = await this.prisma.product.findMany({
       where: whereProduct,
-      include: { variants: true },
+      include: {
+        variants: true,
+      },
     });
 
     if (products.length === 0) {
-      throw new NotFoundException('No se encontraron productos que coincidan con los filtros.');
+      throw new NotFoundException(
+        'No se encontraron productos que coincidan con los filtros.',
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -184,47 +331,80 @@ export class PriceListsService {
       for (const product of products) {
         let newPrice = Number(product.price);
 
-        if (adjustmentType === PriceAdjustmentType.PERCENTAGE_INCREASE) {
-          newPrice = newPrice * (1 + value / 100);
-        } else if (adjustmentType === PriceAdjustmentType.PERCENTAGE_DISCOUNT) {
-          newPrice = newPrice * (1 - value / 100);
-        } else if (adjustmentType === PriceAdjustmentType.FIXED_PRICE) {
+        if (
+          adjustmentType ===
+          PriceAdjustmentType.PERCENTAGE_INCREASE
+        ) {
+          newPrice =
+            newPrice * (1 + value / 100);
+        } else if (
+          adjustmentType ===
+          PriceAdjustmentType.PERCENTAGE_DISCOUNT
+        ) {
+          newPrice =
+            newPrice * (1 - value / 100);
+        } else if (
+          adjustmentType ===
+          PriceAdjustmentType.FIXED_PRICE
+        ) {
           newPrice = value;
         }
 
         newPrice = Math.round(newPrice);
 
         if (applyToBaseProducts || !priceListId) {
-          // Actualizar precio base del producto
           await tx.product.update({
-            where: { id: product.id },
-            data: { price: newPrice },
+            where: {
+              id: product.id,
+            },
+            data: {
+              price: newPrice,
+            },
           });
 
-          // Actualizar variantes si existen
           for (const variant of product.variants) {
-            let variantPrice = Number(variant.price || product.price);
-            if (adjustmentType === PriceAdjustmentType.PERCENTAGE_INCREASE) {
-              variantPrice = variantPrice * (1 + value / 100);
-            } else if (adjustmentType === PriceAdjustmentType.PERCENTAGE_DISCOUNT) {
-              variantPrice = variantPrice * (1 - value / 100);
-            } else if (adjustmentType === PriceAdjustmentType.FIXED_PRICE) {
+            let variantPrice = Number(
+              variant.price || product.price,
+            );
+
+            if (
+              adjustmentType ===
+              PriceAdjustmentType.PERCENTAGE_INCREASE
+            ) {
+              variantPrice =
+                variantPrice * (1 + value / 100);
+            } else if (
+              adjustmentType ===
+              PriceAdjustmentType.PERCENTAGE_DISCOUNT
+            ) {
+              variantPrice =
+                variantPrice * (1 - value / 100);
+            } else if (
+              adjustmentType ===
+              PriceAdjustmentType.FIXED_PRICE
+            ) {
               variantPrice = value;
             }
+
             await tx.productVariant.update({
-              where: { id: variant.id },
-              data: { price: Math.round(variantPrice) },
+              where: {
+                id: variant.id,
+              },
+              data: {
+                price: Math.round(
+                  variantPrice,
+                ),
+              },
             });
           }
-        } else if (priceListId) {
-          // Actualizar o insertar en PriceListItem
+        } else {
           await tx.priceListItem.upsert({
             where: {
               tenantId_priceListId_productId_variantId_minQuantity: {
                 tenantId,
                 priceListId,
                 productId: product.id,
-                variantId: null as any,
+                variantId: null,
                 minQuantity: 1,
               },
             },
@@ -248,18 +428,21 @@ export class PriceListsService {
         updatedCount++;
       }
 
-      // Registro de Auditoría Inmutable
       await tx.auditLog.create({
         data: {
           tenantId,
           userId,
           action: 'BULK_PRICE_ADJUSTMENT',
-          entityName: priceListId ? 'PriceList' : 'ProductCatalog',
-          entityId: priceListId || 'BASE_CATALOG',
+          entityName: priceListId
+            ? 'PriceList'
+            : 'ProductCatalog',
+          entityId:
+            priceListId || 'BASE_CATALOG',
           newValues: {
             adjustmentType,
             value,
-            productsAffected: updatedCount,
+            productsAffected:
+              updatedCount,
             categoryId,
           },
         },
@@ -267,7 +450,8 @@ export class PriceListsService {
 
       return {
         success: true,
-        message: `Modificación masiva completada exitosamente en ${updatedCount} productos.`,
+        message:
+          `Modificación masiva completada exitosamente en ${updatedCount} productos.`,
         productsAffected: updatedCount,
         adjustmentType,
         value,

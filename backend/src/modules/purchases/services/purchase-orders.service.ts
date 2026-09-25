@@ -12,6 +12,36 @@ import {
 
 @Injectable()
 export class PurchaseOrdersService {
+  private readonly allowedTransitions: Record<
+    PurchaseOrderStatus,
+    PurchaseOrderStatus[]
+  > = {
+    [PurchaseOrderStatus.RFQ]: [
+      PurchaseOrderStatus.SENT,
+      PurchaseOrderStatus.CANCELLED,
+    ],
+
+    [PurchaseOrderStatus.SENT]: [
+      PurchaseOrderStatus.CONFIRMED,
+      PurchaseOrderStatus.CANCELLED,
+    ],
+
+    [PurchaseOrderStatus.CONFIRMED]: [
+      PurchaseOrderStatus.PARTIALLY_RECEIVED,
+      PurchaseOrderStatus.RECEIVED,
+      PurchaseOrderStatus.CANCELLED,
+    ],
+
+    [PurchaseOrderStatus.PARTIALLY_RECEIVED]: [
+      PurchaseOrderStatus.RECEIVED,
+      PurchaseOrderStatus.CANCELLED,
+    ],
+
+    [PurchaseOrderStatus.RECEIVED]: [],
+
+    [PurchaseOrderStatus.CANCELLED]: [],
+  };
+
   constructor(
     private readonly prisma: PrismaService,
   ) {}
@@ -27,6 +57,16 @@ export class PurchaseOrdersService {
     ) {
       throw new BadRequestException(
         'La orden de compra debe contener al menos un ítem.',
+      );
+    }
+
+    if (
+      dto.status &&
+      dto.status !==
+        PurchaseOrderStatus.RFQ
+    ) {
+      throw new BadRequestException(
+        'Una nueva orden de compra debe comenzar en estado RFQ.',
       );
     }
 
@@ -47,7 +87,7 @@ export class PurchaseOrdersService {
 
     if (!supplier) {
       throw new NotFoundException(
-        'El proveedor indicado no existe o no tiene perfil de proveedor.',
+        'El proveedor indicado no existe o no tiene perfil de proveedor dentro del tenant actual.',
       );
     }
 
@@ -115,10 +155,14 @@ export class PurchaseOrdersService {
       }
 
       const unitCost =
-        Math.round(item.unitCost);
+        Math.round(
+          item.unitCost,
+        );
 
       if (
-        !Number.isInteger(unitCost) ||
+        !Number.isInteger(
+          unitCost,
+        ) ||
         unitCost < 0
       ) {
         throw new BadRequestException(
@@ -127,7 +171,8 @@ export class PurchaseOrdersService {
       }
 
       const itemTaxRate =
-        item.taxRate !== undefined
+        item.taxRate !==
+        undefined
           ? item.taxRate
           : 19;
 
@@ -146,13 +191,13 @@ export class PurchaseOrdersService {
       const itemSubtotal =
         Math.round(
           item.quantity *
-          unitCost,
+            unitCost,
         );
 
       const itemTax =
         Math.round(
           itemSubtotal *
-          (itemTaxRate / 100),
+            (itemTaxRate / 100),
         );
 
       const itemTotal =
@@ -169,7 +214,8 @@ export class PurchaseOrdersService {
         productId:
           product.id,
         variantId:
-          variant?.id || null,
+          variant?.id ||
+          null,
         productName:
           product.orderName ||
           product.name,
@@ -195,9 +241,8 @@ export class PurchaseOrdersService {
           tenantId,
           poNumber,
           supplierId:
-            dto.supplierId,
+            supplier.id,
           status:
-            dto.status ||
             PurchaseOrderStatus.RFQ,
           expectedDate:
             dto.expectedDate
@@ -205,8 +250,7 @@ export class PurchaseOrdersService {
                   dto.expectedDate,
                 )
               : null,
-          notes:
-            dto.notes,
+          notes: dto.notes,
           subtotalAmount,
           taxAmount,
           totalAmount,
@@ -245,6 +289,8 @@ export class PurchaseOrdersService {
             supplier.name,
           totalAmount:
             po.totalAmount,
+          status:
+            po.status,
         },
       },
     });
@@ -309,7 +355,8 @@ export class PurchaseOrdersService {
               items: true,
             },
           },
-          vendorBills: true,
+          vendorBills:
+            true,
         },
       });
 
@@ -335,13 +382,25 @@ export class PurchaseOrdersService {
       );
 
     if (
-      po.status ===
-        PurchaseOrderStatus.CANCELLED &&
-      status !==
-        PurchaseOrderStatus.CANCELLED
+      po.status === status
     ) {
       throw new BadRequestException(
-        'Una orden de compra cancelada no puede reabrirse mediante este endpoint.',
+        `La orden de compra ya se encuentra en estado ${status}.`,
+      );
+    }
+
+    const allowedNextStatuses =
+      this.allowedTransitions[
+        po.status
+      ];
+
+    if (
+      !allowedNextStatuses.includes(
+        status,
+      )
+    ) {
+      throw new BadRequestException(
+        `Transición de estado no permitida: ${po.status} → ${status}.`,
       );
     }
 
