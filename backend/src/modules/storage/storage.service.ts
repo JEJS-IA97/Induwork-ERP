@@ -11,6 +11,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  HeadObjectCommand
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaService } from '../../database/prisma.service';
@@ -28,6 +29,7 @@ export class StorageService {
   private readonly bucketName: string;
   private readonly publicUrl: string;
   private readonly isProduction: boolean;
+  private readonly storageMockMode: boolean;
 
   // Límites de tamaño en bytes
   private readonly MAX_IMAGE_SIZE = 12 * 1024 * 1024;
@@ -56,40 +58,49 @@ export class StorageService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {
-    this.isProduction =
-      this.configService.get<string>('NODE_ENV') === 'production';
+      this.storageMockMode =
+    this.configService.get<string>(
+      'STORAGE_MOCK_MODE',
+    ) === 'true' &&
+    !this.isProduction;
 
-    this.bucketName =
-      this.configService.get<string>('S3_BUCKET_NAME') ||
-      'induwork-erp-storage';
+  const accessKeyId =
+    this.configService.get<string>(
+      'S3_ACCESS_KEY_ID',
+    );
 
-    this.publicUrl =
-      this.configService.get<string>('S3_PUBLIC_URL') ||
-      'https://storage.induwork.cl';
+  const secretAccessKey =
+    this.configService.get<string>(
+      'S3_SECRET_ACCESS_KEY',
+    );
 
-    const endpoint =
-      this.configService.get<string>('S3_ENDPOINT');
+  if (
+    this.isProduction &&
+    (
+      !accessKeyId ||
+      !secretAccessKey ||
+      !this.bucketName ||
+      !this.publicUrl
+    )
+  ) {
+    throw new Error(
+      'La configuración de almacenamiento S3/R2 está incompleta en producción.',
+    );
+  }
 
-    const region =
-      this.configService.get<string>('S3_REGION') || 'auto';
-
-    const accessKeyId =
-      this.configService.get<string>('S3_ACCESS_KEY_ID') ||
-      'placeholder_key';
-
-    const secretAccessKey =
-      this.configService.get<string>('S3_SECRET_ACCESS_KEY') ||
-      'placeholder_secret';
-
-    this.s3Client = new S3Client({
-      region,
-      endpoint: endpoint || undefined,
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
-      forcePathStyle: true,
-    });
+  this.s3Client = new S3Client({
+    region,
+    endpoint: endpoint || undefined,
+    ...(accessKeyId && secretAccessKey
+      ? {
+          credentials: {
+            accessKeyId,
+            secretAccessKey,
+          },
+        }
+      : {}),
+    forcePathStyle: true,
+  });
   }
 
   /**

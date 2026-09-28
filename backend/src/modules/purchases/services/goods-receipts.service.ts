@@ -24,9 +24,7 @@ export class GoodsReceiptsService {
     tenantId: string,
     userId: string,
   ) {
-    if (
-      !dto.poId
-    ) {
+    if (!dto.poId) {
       throw new BadRequestException(
         'Una recepción de mercadería debe estar vinculada a una orden de compra.',
       );
@@ -69,8 +67,7 @@ export class GoodsReceiptsService {
     const purchaseOrder =
       await this.prisma.purchaseOrder.findFirst({
         where: {
-          id:
-            dto.poId,
+          id: dto.poId,
           tenantId,
         },
         include: {
@@ -93,12 +90,25 @@ export class GoodsReceiptsService {
       );
     }
 
+    /*
+     * Una recepción solo puede realizarse cuando la OC
+     * ya fue confirmada o cuando tiene una recepción parcial.
+     *
+     * RFQ    -> todavía no está confirmada
+     * SENT   -> fue enviada al proveedor, pero aún no confirmada
+     * CONFIRMED -> puede recibirse
+     * PARTIALLY_RECEIVED -> puede continuar recibiéndose
+     * RECEIVED -> ya fue completamente recibida
+     * CANCELLED -> no puede recibirse
+     */
     if (
-      purchaseOrder.status ===
-        PurchaseOrderStatus.CANCELLED
+      purchaseOrder.status !==
+        PurchaseOrderStatus.CONFIRMED &&
+      purchaseOrder.status !==
+        PurchaseOrderStatus.PARTIALLY_RECEIVED
     ) {
       throw new BadRequestException(
-        'No se puede recibir mercadería de una orden de compra cancelada.',
+        `No se puede registrar una recepción para una orden de compra en estado '${purchaseOrder.status}'. La orden debe estar CONFIRMED o PARTIALLY_RECEIVED.`,
       );
     }
 
