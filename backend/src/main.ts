@@ -19,16 +19,13 @@ async function bootstrap() {
       AppModule,
     );
 
-  const isProduction =
-    process.env.NODE_ENV ===
-    'production';
-
+  /*
+   * Swagger solo se habilita cuando se solicita explícitamente.
+   * En producción nunca se activa por defecto.
+   */
   const swaggerEnabled =
     process.env.SWAGGER_ENABLED ===
-    'true' ||
-    (!isProduction &&
-      process.env.SWAGGER_ENABLED !==
-        'false');
+    'true';
 
   // 1. SEGURIDAD: Helmet para protección de cabeceras HTTP
   app.use(
@@ -56,7 +53,7 @@ async function bootstrap() {
     }),
   );
 
-  // 2. SEGURIDAD: CORS restringido con whitelist de dominios
+  // 2. SEGURIDAD: CORS restringido por whitelist en todos los entornos
   const corsWhitelistEnv =
     process.env.CORS_ORIGINS || '';
 
@@ -85,8 +82,7 @@ async function bootstrap() {
         !origin ||
         corsWhitelist.includes(
           origin,
-        ) ||
-        !isProduction
+        )
       ) {
         callback(null, true);
         return;

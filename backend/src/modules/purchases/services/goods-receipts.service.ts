@@ -115,13 +115,40 @@ export class GoodsReceiptsService {
               );
             }
 
-            const count = await tx.goodsReceipt.count({
-              where: { tenantId },
-            });
-
             const year = new Date().getFullYear();
+            const receiptNumberLockKey = [
+              'GOODS_RECEIPT_NUMBER',
+              tenantId,
+              year,
+            ].join(':');
+
+            // La numeración de recepción es global por tenant/año, por lo que
+            // no basta con bloquear la OC: recepciones de distintas OCs también
+            // deben serializar la obtención del siguiente número.
+            await tx.$queryRaw`
+              SELECT pg_advisory_xact_lock(
+                hashtextextended(${receiptNumberLockKey}, 0)
+              )
+            `;
+
+            const numberResult =
+              await tx.$queryRaw<Array<{ maxNumber: number | null }>>`
+                SELECT MAX(
+                  CASE
+                    WHEN "receiptNumber" ~ ${`^REC-${year}-[0-9]+$`}
+                    THEN CAST(split_part("receiptNumber", '-', 3) AS INTEGER)
+                    ELSE NULL
+                  END
+                ) AS "maxNumber"
+                FROM "goods_receipts"
+                WHERE "tenantId" = ${tenantId}
+              `;
+
+            const nextReceiptNumber =
+              Number(numberResult[0]?.maxNumber ?? 0) + 1;
+
             const receiptNumber =
-              `REC-${year}-${String(count + 1).padStart(4, '0')}`;
+              `REC-${year}-${String(nextReceiptNumber).padStart(4, '0')}`;
 
             const receipt = await tx.goodsReceipt.create({
               data: {

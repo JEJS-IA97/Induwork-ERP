@@ -380,90 +380,134 @@ export class InvoicingService {
     createInvoiceDto: CreateInvoiceDto,
     tenantId: string,
   ) {
-    const order =
-      await this.prisma.order.findFirst({
-        where: {
-          id: createInvoiceDto.orderId,
-          tenantId,
-        },
-        include: {
-          invoices: {
-            where: {
-              status: {
-                not: InvoiceStatus.VOID,
+    return this.prisma.$transaction(async (tx) => {
+      // Serializa facturación concurrente sobre la misma orden.
+      const orderLockKey = [
+        'INVOICE_ORDER',
+        tenantId,
+        createInvoiceDto.orderId,
+      ].join(':');
+
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${orderLockKey}, 0)
+        )
+      `;
+
+      const order =
+        await tx.order.findFirst({
+          where: {
+            id: createInvoiceDto.orderId,
+            tenantId,
+          },
+          include: {
+            invoices: {
+              where: {
+                status: {
+                  not: InvoiceStatus.VOID,
+                },
               },
             },
           },
+        });
+
+      if (!order) {
+        throw new NotFoundException(
+          `Orden '${createInvoiceDto.orderId}' no encontrada dentro del tenant actual.`,
+        );
+      }
+
+      if (
+        order.status ===
+        OrderStatus.CANCELLED
+      ) {
+        throw new BadRequestException(
+          'No se puede crear una factura para una orden cancelada.',
+        );
+      }
+
+      if (order.invoices.length > 0) {
+        throw new ConflictException(
+          `La orden ya tiene una factura asociada: ${order.invoices[0].invoiceNumber}.`,
+        );
+      }
+
+      const subtotalAmount =
+        Math.round(
+          Number(order.subtotalAmount),
+        );
+
+      const taxAmount =
+        Math.round(
+          Number(order.taxAmount),
+        );
+
+      const totalAmount =
+        Math.round(
+          Number(order.totalAmount),
+        );
+
+      const calculatedTotal =
+        subtotalAmount + taxAmount;
+
+      if (calculatedTotal !== totalAmount) {
+        throw new BadRequestException(
+          'Los totales de la orden no son consistentes.',
+        );
+      }
+
+      const year = new Date().getFullYear();
+      const invoiceNumberLockKey = [
+        'INVOICE_NUMBER',
+        tenantId,
+        year,
+      ].join(':');
+
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${invoiceNumberLockKey}, 0)
+        )
+      `;
+
+      const numberResult =
+        await tx.$queryRaw<Array<{ maxNumber: number | null }>>`
+          SELECT MAX(
+            CASE
+              WHEN "invoiceNumber" ~ ${`^FAC-${year}-[0-9]+$`}
+              THEN CAST(split_part("invoiceNumber", '-', 3) AS INTEGER)
+              ELSE NULL
+            END
+          ) AS "maxNumber"
+          FROM "invoices"
+          WHERE "tenantId" = ${tenantId}
+        `;
+
+      const nextInvoiceNumber =
+        Number(numberResult[0]?.maxNumber ?? 0) + 1;
+
+      const invoiceNumber =
+        `FAC-${year}-${String(nextInvoiceNumber).padStart(4, '0')}`;
+
+      return tx.invoice.create({
+        data: {
+          tenantId,
+          invoiceNumber,
+          orderId: order.id,
+          customerId: order.customerId,
+          status: InvoiceStatus.DRAFT,
+          paymentStatus:
+            PaymentStatus.PENDING,
+          subtotalAmount,
+          taxAmount,
+          totalAmount,
+          dueDate:
+            createInvoiceDto.dueDate
+              ? new Date(
+                  createInvoiceDto.dueDate,
+                )
+              : null,
         },
       });
-
-    if (!order) {
-      throw new NotFoundException(
-        `Orden '${createInvoiceDto.orderId}' no encontrada dentro del tenant actual.`,
-      );
-    }
-
-    if (
-      order.status ===
-      OrderStatus.CANCELLED
-    ) {
-      throw new BadRequestException(
-        'No se puede crear una factura para una orden cancelada.',
-      );
-    }
-
-    if (order.invoices.length > 0) {
-      throw new ConflictException(
-        `La orden ya tiene una factura asociada: ${order.invoices[0].invoiceNumber}.`,
-      );
-    }
-
-    const subtotalAmount =
-      Math.round(
-        Number(order.subtotalAmount),
-      );
-
-    const taxAmount =
-      Math.round(
-        Number(order.taxAmount),
-      );
-
-    const totalAmount =
-      Math.round(
-        Number(order.totalAmount),
-      );
-
-    const calculatedTotal =
-      subtotalAmount + taxAmount;
-
-    if (calculatedTotal !== totalAmount) {
-      throw new BadRequestException(
-        'Los totales de la orden no son consistentes.',
-      );
-    }
-
-    const invoiceNumber =
-      `FAC-${Date.now().toString().slice(-6)}`;
-
-    return this.prisma.invoice.create({
-      data: {
-        tenantId,
-        invoiceNumber,
-        orderId: order.id,
-        customerId: order.customerId,
-        status: InvoiceStatus.DRAFT,
-        paymentStatus:
-          PaymentStatus.PENDING,
-        subtotalAmount,
-        taxAmount,
-        totalAmount,
-        dueDate:
-          createInvoiceDto.dueDate
-            ? new Date(
-                createInvoiceDto.dueDate,
-              )
-            : null,
-      },
     });
   }
 }

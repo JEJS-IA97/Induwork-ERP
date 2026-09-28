@@ -467,7 +467,7 @@ model ProductDocument {
   fileType     String              // Ej: "application/pdf"
   fileSize     Int                 // Tamaño en bytes
   documentType ProductDocumentType @default(FICHA_TECNICA)
-  isPublic     Boolean             @default(true) // Visible para descarga de clientes
+  isPublic     Boolean             @default(false)
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
 

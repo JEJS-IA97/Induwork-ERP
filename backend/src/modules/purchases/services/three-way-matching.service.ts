@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { CreateVendorBillDto } from '../dto/create-vendor-bill.dto';
@@ -14,9 +15,7 @@ import {
 
 @Injectable()
 export class ThreeWayMatchingService {
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Registra una Factura de Proveedor y ejecuta
@@ -28,25 +27,19 @@ export class ThreeWayMatchingService {
     userId: string,
   ) {
     if (!tenantId) {
-      throw new BadRequestException(
-        'El tenant es obligatorio.',
-      );
+      throw new BadRequestException('El tenant es obligatorio.');
     }
 
-    const supplier =
-      await this.prisma.customer.findFirst({
-        where: {
-          id: dto.supplierId,
-          tenantId,
-          isActive: true,
-          type: {
-            in: [
-              CustomerType.PROVEEDOR,
-              CustomerType.AMBOS,
-            ],
-          },
+    const supplier = await this.prisma.customer.findFirst({
+      where: {
+        id: dto.supplierId,
+        tenantId,
+        isActive: true,
+        type: {
+          in: [CustomerType.PROVEEDOR, CustomerType.AMBOS],
         },
-      });
+      },
+    });
 
     if (!supplier) {
       throw new NotFoundException(
@@ -54,96 +47,59 @@ export class ThreeWayMatchingService {
       );
     }
 
-    const existing =
-      await this.prisma.vendorBill.findUnique({
-        where: {
-          tenantId_supplierId_billNumber: {
-            tenantId,
-            supplierId:
-              dto.supplierId,
-            billNumber:
-              dto.billNumber,
-          },
+    const existing = await this.prisma.vendorBill.findUnique({
+      where: {
+        tenantId_supplierId_billNumber: {
+          tenantId,
+          supplierId: dto.supplierId,
+          billNumber: dto.billNumber,
         },
-      });
+      },
+    });
 
     if (existing) {
-      throw new BadRequestException(
+      throw new ConflictException(
         `Ya existe una factura registrada con el folio '${dto.billNumber}' para este proveedor.`,
       );
     }
 
-    const subtotalAmount =
-      Math.round(
-        dto.subtotalAmount,
-      );
-
-    const taxAmount =
-      Math.round(
-        dto.taxAmount,
-      );
-
-    const totalAmount =
-      Math.round(
-        dto.totalAmount,
-      );
+    const subtotalAmount = Math.round(dto.subtotalAmount);
+    const taxAmount = Math.round(dto.taxAmount);
+    const totalAmount = Math.round(dto.totalAmount);
 
     if (
-      !Number.isInteger(
-        subtotalAmount,
-      ) ||
-      !Number.isInteger(
-        taxAmount,
-      ) ||
-      !Number.isInteger(
-        totalAmount,
-      )
+      !Number.isInteger(subtotalAmount) ||
+      !Number.isInteger(taxAmount) ||
+      !Number.isInteger(totalAmount)
     ) {
       throw new BadRequestException(
         'Los montos de la factura deben expresarse como pesos enteros.',
       );
     }
 
-    if (
-      subtotalAmount +
-        taxAmount !==
-      totalAmount
-    ) {
+    if (subtotalAmount + taxAmount !== totalAmount) {
       throw new BadRequestException(
         'El subtotal más el IVA no coincide con el total de la factura de proveedor.',
       );
     }
 
-    /*
-     * Cast explícito para evitar que TypeScript
-     * estreche el valor inicial a "NOT_MATCHED".
-     */
     let matchStatus =
       ThreeWayMatchStatus.NOT_MATCHED as ThreeWayMatchStatus;
-
-    const discrepancies: string[] =
-      [];
+    const discrepancies: string[] = [];
 
     let po = null;
     let receipt = null;
 
-    /*
-     * --------------------------------------------------------------------------
-     * 1. VALIDAR ORDEN DE COMPRA
-     * --------------------------------------------------------------------------
-     */
     if (dto.poId) {
-      po =
-        await this.prisma.purchaseOrder.findFirst({
-          where: {
-            id:
-              dto.poId,
-            tenantId,
-          },
-          include: {
-            items: true,
-          },
-        });
+      po = await this.prisma.purchaseOrder.findFirst({
+        where: {
+          id: dto.poId,
+          tenantId,
+        },
+        include: {
+          items: true,
+        },
+      });
 
       if (!po) {
         throw new NotFoundException(
@@ -151,64 +107,38 @@ export class ThreeWayMatchingService {
         );
       }
 
-      if (
-        po.supplierId !==
-        dto.supplierId
-      ) {
+      if (po.supplierId !== dto.supplierId) {
         throw new BadRequestException(
           'El proveedor de la factura no coincide con el proveedor de la orden de compra.',
         );
       }
 
-      if (
-        po.status ===
-        'CANCELLED'
-      ) {
+      if (po.status === 'CANCELLED') {
         throw new BadRequestException(
           'No se puede procesar una factura contra una orden de compra cancelada.',
         );
       }
 
-      const poTotal =
-        Math.round(
-          Number(
-            po.totalAmount,
-          ),
-        );
+      const poTotal = Math.round(Number(po.totalAmount));
 
-      if (
-        poTotal !==
-        totalAmount
-      ) {
-        const difference =
-          Math.abs(
-            poTotal -
-              totalAmount,
-          );
-
+      if (poTotal !== totalAmount) {
+        const difference = Math.abs(poTotal - totalAmount);
         discrepancies.push(
           `Diferencia en Monto Total: OC $${poTotal.toLocaleString('es-CL')} vs Factura $${totalAmount.toLocaleString('es-CL')} (Dif: $${difference.toLocaleString('es-CL')}).`,
         );
       }
     }
 
-    /*
-     * --------------------------------------------------------------------------
-     * 2. VALIDAR RECEPCIÓN DE MERCADERÍA
-     * --------------------------------------------------------------------------
-     */
     if (dto.receiptId) {
-      receipt =
-        await this.prisma.goodsReceipt.findFirst({
-          where: {
-            id:
-              dto.receiptId,
-            tenantId,
-          },
-          include: {
-            items: true,
-          },
-        });
+      receipt = await this.prisma.goodsReceipt.findFirst({
+        where: {
+          id: dto.receiptId,
+          tenantId,
+        },
+        include: {
+          items: true,
+        },
+      });
 
       if (!receipt) {
         throw new NotFoundException(
@@ -216,130 +146,67 @@ export class ThreeWayMatchingService {
         );
       }
 
-      if (
-        receipt.supplierId !==
-        dto.supplierId
-      ) {
+      if (receipt.supplierId !== dto.supplierId) {
         throw new BadRequestException(
           'El proveedor de la factura no coincide con el proveedor de la recepción.',
         );
       }
 
-      if (
-        receipt.status !==
-        GoodsReceiptStatus.VALIDATED
-      ) {
+      if (receipt.status !== GoodsReceiptStatus.VALIDATED) {
         discrepancies.push(
           `La recepción de bodega ${receipt.receiptNumber} no está validada.`,
         );
       }
 
-      if (
-        po &&
-        receipt.poId !==
-          po.id
-      ) {
+      if (po && receipt.poId !== po.id) {
         discrepancies.push(
           'La recepción de mercadería no corresponde a la orden de compra indicada.',
         );
       }
     }
 
-    /*
-     * --------------------------------------------------------------------------
-     * 3. VALIDAR QUE EXISTA EL 3-WAY MATCH COMPLETO
-     * --------------------------------------------------------------------------
-     */
     if (!dto.poId && !dto.receiptId) {
-      matchStatus =
-        ThreeWayMatchStatus.NOT_MATCHED;
+      matchStatus = ThreeWayMatchStatus.NOT_MATCHED;
     } else if (!dto.poId || !dto.receiptId) {
       discrepancies.push(
         'El 3-Way Matching requiere una Orden de Compra y una Recepción de Mercadería.',
       );
+      matchStatus = ThreeWayMatchStatus.DISCREPANCY;
+    } else if (po && receipt) {
+      const receivedByProduct = new Map<string, number>();
 
-      matchStatus =
-        ThreeWayMatchStatus.DISCREPANCY;
-    } else if (
-      po &&
-      receipt
-    ) {
-      /*
-       * ------------------------------------------------------------------------
-       * 4. COMPARAR CANTIDADES OC VS RECEPCIÓN
-       * ------------------------------------------------------------------------
-       */
-      const receivedByProduct =
-        new Map<string, number>();
-
-      for (
-        const receiptItem of receipt.items
-      ) {
-        const key =
-          `${receiptItem.productId}:${receiptItem.variantId || ''}`;
-
-        const current =
-          receivedByProduct.get(
-            key,
-          ) || 0;
-
+      for (const receiptItem of receipt.items) {
+        const key = `${receiptItem.productId}:${receiptItem.variantId || ''}`;
+        const current = receivedByProduct.get(key) || 0;
         receivedByProduct.set(
           key,
-          current +
-            receiptItem.quantityReceived,
+          current + receiptItem.quantityReceived,
         );
       }
 
-      for (
-        const poItem of po.items
-      ) {
-        const key =
-          `${poItem.productId}:${poItem.variantId || ''}`;
+      for (const poItem of po.items) {
+        const key = `${poItem.productId}:${poItem.variantId || ''}`;
+        const received = receivedByProduct.get(key) || 0;
 
-        const received =
-          receivedByProduct.get(
-            key,
-          ) || 0;
-
-        if (
-          received <
-          poItem.quantity
-        ) {
+        if (received < poItem.quantity) {
           discrepancies.push(
             `Cantidad pendiente para el producto ${poItem.productId}: OC ${poItem.quantity}, recibido ${received}.`,
           );
         }
 
-        if (
-          received >
-          poItem.quantity
-        ) {
+        if (received > poItem.quantity) {
           discrepancies.push(
             `Cantidad recibida superior a la OC para el producto ${poItem.productId}: OC ${poItem.quantity}, recibido ${received}.`,
           );
         }
       }
 
-      /*
-       * Detectar productos recibidos que no existen en la OC.
-       */
-      for (
-        const receiptItem of receipt.items
-      ) {
-        const matchingPoItem =
-          po.items.find(
-            (poItem) =>
-              poItem.productId ===
-                receiptItem.productId &&
-              (
-                poItem.variantId ||
-                null
-              ) ===
-                (
-                  receiptItem.variantId ||
-                  null
-                ),
-          );
+      for (const receiptItem of receipt.items) {
+        const matchingPoItem = po.items.find(
+          (poItem) =>
+            poItem.productId === receiptItem.productId &&
+            (poItem.variantId || null) === (receiptItem.variantId || null),
+        );
 
         if (!matchingPoItem) {
           discrepancies.push(
@@ -348,72 +215,32 @@ export class ThreeWayMatchingService {
         }
       }
 
-      /*
-       * Resultado final del matching.
-       */
-      if (
-        discrepancies.length ===
-        0
-      ) {
-        matchStatus =
-          ThreeWayMatchStatus.MATCHED;
-      } else {
-        matchStatus =
-          ThreeWayMatchStatus.DISCREPANCY;
-      }
+      matchStatus =
+        discrepancies.length === 0
+          ? ThreeWayMatchStatus.MATCHED
+          : ThreeWayMatchStatus.DISCREPANCY;
     }
 
-    /*
-     * --------------------------------------------------------------------------
-     * 5. CREAR FACTURA DE PROVEEDOR
-     * --------------------------------------------------------------------------
-     */
-    const bill =
-      await this.prisma.vendorBill.create({
+    try {
+      const bill = await this.prisma.vendorBill.create({
         data: {
           tenantId,
-          billNumber:
-            dto.billNumber,
-          supplierId:
-            dto.supplierId,
-          poId:
-            dto.poId ||
-            null,
-          receiptId:
-            dto.receiptId ||
-            null,
-          dteType:
-            dto.dteType ||
-            33,
-          status:
-            VendorBillStatus.DRAFT,
+          billNumber: dto.billNumber,
+          supplierId: dto.supplierId,
+          poId: dto.poId || null,
+          receiptId: dto.receiptId || null,
+          dteType: dto.dteType || 33,
+          status: VendorBillStatus.DRAFT,
           matchStatus,
           matchDiscrepancyNotes:
-            discrepancies.length >
-            0
-              ? discrepancies.join(
-                  ' | ',
-                )
-              : null,
-          issueDate:
-            dto.issueDate
-              ? new Date(
-                  dto.issueDate,
-                )
-              : new Date(),
-          dueDate:
-            dto.dueDate
-              ? new Date(
-                  dto.dueDate,
-                )
-              : null,
+            discrepancies.length > 0 ? discrepancies.join(' | ') : null,
+          issueDate: dto.issueDate ? new Date(dto.issueDate) : new Date(),
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
           subtotalAmount,
           taxAmount,
           totalAmount,
-          pdfUrl:
-            dto.pdfUrl,
-          xmlUrl:
-            dto.xmlUrl,
+          pdfUrl: dto.pdfUrl,
+          xmlUrl: dto.xmlUrl,
         },
         include: {
           supplier: true,
@@ -422,40 +249,40 @@ export class ThreeWayMatchingService {
         },
       });
 
-    /*
-     * --------------------------------------------------------------------------
-     * 6. AUDITORÍA
-     * --------------------------------------------------------------------------
-     */
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action:
-          'CREATE_VENDOR_BILL_3WAY_MATCH',
-        entityName:
-          'VendorBill',
-        entityId:
-          bill.id,
-        newValues: {
-          billNumber:
-            bill.billNumber,
-          supplierId:
-            bill.supplierId,
-          matchStatus:
-            bill.matchStatus,
-          discrepancies:
-            discrepancies.length,
+      await this.prisma.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'CREATE_VENDOR_BILL_3WAY_MATCH',
+          entityName: 'VendorBill',
+          entityId: bill.id,
+          newValues: {
+            billNumber: bill.billNumber,
+            supplierId: bill.supplierId,
+            matchStatus: bill.matchStatus,
+            discrepancies: discrepancies.length,
+          },
         },
-      },
-    });
+      });
 
-    return bill;
+      return bill;
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: string }).code === 'P2002'
+      ) {
+        throw new ConflictException(
+          `Ya existe una factura registrada con el folio '${dto.billNumber}' para este proveedor.`,
+        );
+      }
+
+      throw error;
+    }
   }
 
-  async findAllBills(
-    tenantId: string,
-  ) {
+  async findAllBills(tenantId: string) {
     return this.prisma.vendorBill.findMany({
       where: {
         tenantId,
@@ -471,35 +298,29 @@ export class ThreeWayMatchingService {
     });
   }
 
-  async findOneBill(
-    id: string,
-    tenantId: string,
-  ) {
-    const bill =
-      await this.prisma.vendorBill.findFirst({
-        where: {
-          id,
-          tenantId,
-        },
-        include: {
-          supplier: true,
-          po: {
-            include: {
-              items: true,
-            },
-          },
-          receipt: {
-            include: {
-              items: true,
-            },
+  async findOneBill(id: string, tenantId: string) {
+    const bill = await this.prisma.vendorBill.findFirst({
+      where: {
+        id,
+        tenantId,
+      },
+      include: {
+        supplier: true,
+        po: {
+          include: {
+            items: true,
           },
         },
-      });
+        receipt: {
+          include: {
+            items: true,
+          },
+        },
+      },
+    });
 
     if (!bill) {
-      throw new NotFoundException(
-        'Factura de proveedor no encontrada.',
-      );
+      throw new NotFoundException('Factura de proveedor no encontrada.');
     }
 
     return bill;
@@ -510,65 +331,83 @@ export class ThreeWayMatchingService {
     tenantId: string,
     userId: string,
   ) {
-    const bill =
-      await this.findOneBill(
-        id,
-        tenantId,
-      );
-
-    if (
-      bill.status !==
-      VendorBillStatus.DRAFT
-    ) {
-      throw new BadRequestException(
-        'Solo se pueden aprobar facturas de proveedor en estado DRAFT.',
-      );
+    if (!tenantId) {
+      throw new BadRequestException('El tenant es obligatorio.');
     }
 
-    if (
-      bill.matchStatus !==
-      ThreeWayMatchStatus.MATCHED
-    ) {
-      throw new BadRequestException(
-        'La factura de proveedor no puede contabilizarse porque el 3-Way Matching no está en estado MATCHED.',
-      );
-    }
+    return this.prisma.$transaction(
+      async (tx) => {
+        const billLockKey = [
+          'VENDOR_BILL_APPROVAL',
+          tenantId,
+          id,
+        ].join(':');
 
-    const updated =
-      await this.prisma.vendorBill.update({
-        where: {
-          id:
-            bill.id,
-        },
-        data: {
-          status:
-            VendorBillStatus.POSTED,
-        },
-      });
+        // Serializa aprobaciones concurrentes de la misma factura.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${billLockKey}, 0)
+          )
+        `;
 
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action:
-          'APPROVE_VENDOR_BILL',
-        entityName:
-          'VendorBill',
-        entityId:
-          bill.id,
-        oldValues: {
-          status:
-            bill.status,
-          matchStatus:
-            bill.matchStatus,
-        },
-        newValues: {
-          status:
-            VendorBillStatus.POSTED,
-        },
+        // Releer dentro de la misma transacción después de obtener el lock.
+        const bill = await tx.vendorBill.findFirst({
+          where: {
+            id,
+            tenantId,
+          },
+        });
+
+        if (!bill) {
+          throw new NotFoundException(
+            'Factura de proveedor no encontrada.',
+          );
+        }
+
+        if (bill.status !== VendorBillStatus.DRAFT) {
+          throw new BadRequestException(
+            'Solo se pueden aprobar facturas de proveedor en estado DRAFT.',
+          );
+        }
+
+        if (bill.matchStatus !== ThreeWayMatchStatus.MATCHED) {
+          throw new BadRequestException(
+            'La factura de proveedor no puede contabilizarse porque el 3-Way Matching no está en estado MATCHED.',
+          );
+        }
+
+        const updated = await tx.vendorBill.update({
+          where: {
+            id: bill.id,
+          },
+          data: {
+            status: VendorBillStatus.POSTED,
+          },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId,
+            action: 'APPROVE_VENDOR_BILL',
+            entityName: 'VendorBill',
+            entityId: bill.id,
+            oldValues: {
+              status: bill.status,
+              matchStatus: bill.matchStatus,
+            },
+            newValues: {
+              status: VendorBillStatus.POSTED,
+            },
+          },
+        });
+
+        return updated;
       },
-    });
-
-    return updated;
+      {
+        maxWait: 5000,
+        timeout: 10000,
+      },
+    );
   }
 }

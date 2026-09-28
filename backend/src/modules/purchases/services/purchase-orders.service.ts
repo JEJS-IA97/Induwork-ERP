@@ -76,16 +76,11 @@ export class PurchaseOrdersService {
       );
     }
 
+    const year = new Date().getFullYear();
     let poNumber = dto.poNumber?.trim();
 
-    if (!poNumber) {
-      const count = await this.prisma.purchaseOrder.count({
-        where: { tenantId },
-      });
-
-      const year = new Date().getFullYear();
-      poNumber = `OC-${year}-${String(count + 1).padStart(4, '0')}`;
-    }
+    // La numeración automática se calcula dentro de una transacción y bajo
+    // un advisory lock por tenant/año para evitar colisiones concurrentes.
 
     let subtotalAmount = 0;
     let taxAmount = 0;
@@ -172,33 +167,60 @@ export class PurchaseOrdersService {
 
     const totalAmount = subtotalAmount + taxAmount;
 
-    const po = await this.prisma.purchaseOrder.create({
-      data: {
-        tenantId,
-        poNumber,
-        supplierId: supplier.id,
-        status: PurchaseOrderStatus.RFQ,
-        expectedDate: dto.expectedDate
-          ? new Date(dto.expectedDate)
-          : null,
-        notes: dto.notes,
-        subtotalAmount,
-        taxAmount,
-        totalAmount,
-        createdById: userId,
-        items: {
-          create: itemsData,
-        },
-      },
-      include: {
-        supplier: true,
-        items: {
-          include: {
-            product: true,
-            variant: true,
+    const po = await this.prisma.$transaction(async (tx) => {
+      if (!poNumber) {
+        const lockKey = ['PURCHASE_ORDER_NUMBER', tenantId, year].join(':');
+
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${lockKey}, 0)
+          )
+        `;
+
+        const result = await tx.$queryRaw<Array<{ maxNumber: number | null }>>`
+          SELECT MAX(
+            CASE
+              WHEN "poNumber" ~ ${`^OC-${year}-[0-9]+$`}
+              THEN CAST(split_part("poNumber", '-', 3) AS INTEGER)
+              ELSE NULL
+            END
+          ) AS "maxNumber"
+          FROM "purchase_orders"
+          WHERE "tenantId" = ${tenantId}
+        `;
+
+        const nextNumber = Number(result[0]?.maxNumber ?? 0) + 1;
+        poNumber = `OC-${year}-${String(nextNumber).padStart(4, '0')}`;
+      }
+
+      return tx.purchaseOrder.create({
+        data: {
+          tenantId,
+          poNumber,
+          supplierId: supplier.id,
+          status: PurchaseOrderStatus.RFQ,
+          expectedDate: dto.expectedDate
+            ? new Date(dto.expectedDate)
+            : null,
+          notes: dto.notes,
+          subtotalAmount,
+          taxAmount,
+          totalAmount,
+          createdById: userId,
+          items: {
+            create: itemsData,
           },
         },
-      },
+        include: {
+          supplier: true,
+          items: {
+            include: {
+              product: true,
+              variant: true,
+            },
+          },
+        },
+      });
     });
 
     await this.prisma.auditLog.create({

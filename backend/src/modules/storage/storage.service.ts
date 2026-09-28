@@ -42,7 +42,6 @@ export class StorageService {
     'image/jpeg',
     'image/png',
     'image/webp',
-    'image/svg+xml',
     'image/gif',
   ];
 
@@ -52,7 +51,6 @@ export class StorageService {
 
   private readonly ALLOWED_SIGNATURE_MIMES = [
     'image/png',
-    'image/svg+xml',
   ];
 
   constructor(
@@ -158,7 +156,7 @@ export class StorageService {
     if (category === StorageCategory.PRODUCT_IMAGE) {
       if (!this.ALLOWED_IMAGE_MIMES.includes(normalizedType)) {
         throw new BadRequestException(
-          `Formato de imagen no permitido '${fileType}'. Formatos válidos: JPEG, PNG, WEBP, SVG, GIF.`,
+          `Formato de imagen no permitido '${fileType}'. Formatos válidos: JPEG, PNG, WEBP o GIF.`,
         );
       }
 
@@ -191,7 +189,7 @@ export class StorageService {
     if (category === StorageCategory.SIGNATURE) {
       if (!this.ALLOWED_SIGNATURE_MIMES.includes(normalizedType)) {
         throw new BadRequestException(
-          'Formato de firma no permitido. Solo se admiten PNG o SVG.',
+          'Formato de firma no permitido. Solo se admiten archivos PNG.',
         );
       }
 
@@ -238,6 +236,112 @@ export class StorageService {
     }
   }
 
+  private async readUploadedObjectHeader(
+    fileKey: string,
+  ): Promise<Uint8Array> {
+    const object = await this.s3Client.send(
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: fileKey,
+        Range: 'bytes=0-4095',
+      }),
+    );
+
+    if (!object.Body) {
+      throw new ServiceUnavailableException(
+        'No fue posible leer el contenido del archivo almacenado.',
+      );
+    }
+
+    const body = object.Body as unknown as {
+      transformToByteArray?: () => Promise<Uint8Array>;
+    };
+
+    if (typeof body.transformToByteArray !== 'function') {
+      throw new ServiceUnavailableException(
+        'El almacenamiento no devolvió un cuerpo de archivo legible.',
+      );
+    }
+
+    return body.transformToByteArray();
+  }
+
+  private validateFileSignature(
+    bytes: Uint8Array,
+    expectedFileType: string,
+  ) {
+    const type = expectedFileType.trim().toLowerCase();
+
+    const startsWith = (signature: number[]) =>
+      bytes.length >= signature.length &&
+      signature.every((value, index) => bytes[index] === value);
+
+    const asciiStartsWith = (value: string) => {
+      const signature = new TextEncoder().encode(value);
+      return startsWith(Array.from(signature));
+    };
+
+    switch (type) {
+      case 'application/pdf':
+        if (!asciiStartsWith('%PDF-')) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a un PDF válido.',
+          );
+        }
+        return;
+
+      case 'image/jpeg':
+        if (!startsWith([0xff, 0xd8, 0xff])) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a una imagen JPEG válida.',
+          );
+        }
+        return;
+
+      case 'image/png':
+        if (!startsWith([
+          0x89, 0x50, 0x4e, 0x47,
+          0x0d, 0x0a, 0x1a, 0x0a,
+        ])) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a una imagen PNG válida.',
+          );
+        }
+        return;
+
+      case 'image/gif':
+        if (!asciiStartsWith('GIF87a') && !asciiStartsWith('GIF89a')) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a una imagen GIF válida.',
+          );
+        }
+        return;
+
+      case 'image/webp':
+        if (!startsWith([0x52, 0x49, 0x46, 0x46])) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a una imagen WEBP válida.',
+          );
+        }
+
+        if (bytes.length < 12 ||
+            bytes[8] !== 0x57 ||
+            bytes[9] !== 0x45 ||
+            bytes[10] !== 0x42 ||
+            bytes[11] !== 0x50) {
+          throw new BadRequestException(
+            'El contenido del archivo no corresponde a una imagen WEBP válida.',
+          );
+        }
+        return;
+
+      default:
+        throw new BadRequestException(
+          'El tipo de archivo no está soportado para validación de contenido.',
+        );
+    }
+  }
+
   private async verifyUploadedObject(
     fileKey: string,
     expectedFileType: string,
@@ -267,13 +371,29 @@ export class StorageService {
         );
       }
 
+      const normalizedExpectedType =
+        expectedFileType.trim().toLowerCase();
+
       if (
         !actualFileType ||
-        actualFileType !==
-          expectedFileType.trim().toLowerCase()
+        actualFileType !== normalizedExpectedType
       ) {
         throw new BadRequestException(
           'El tipo MIME del archivo almacenado no coincide con el tipo declarado.',
+        );
+      }
+
+      if (
+        normalizedExpectedType === 'application/pdf' ||
+        normalizedExpectedType === 'image/jpeg' ||
+        normalizedExpectedType === 'image/png' ||
+        normalizedExpectedType === 'image/webp' ||
+        normalizedExpectedType === 'image/gif'
+      ) {
+        const headerBytes = await this.readUploadedObjectHeader(fileKey);
+        this.validateFileSignature(
+          headerBytes,
+          normalizedExpectedType,
         );
       }
     } catch (error) {
