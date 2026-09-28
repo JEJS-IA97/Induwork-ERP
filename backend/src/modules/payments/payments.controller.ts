@@ -5,6 +5,10 @@ import {
   Body,
   Param,
   BadRequestException,
+  Headers,
+  Query,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -34,8 +38,7 @@ import { Public } from '../../common/decorators/public.decorator';
 @ApiHeader({
   name: TENANT_HEADER,
   required: false,
-  description:
-    'Identificador del tenant',
+  description: 'Identificador del tenant',
 })
 @Controller('payments')
 export class PaymentsController {
@@ -143,29 +146,85 @@ export class PaymentsController {
   }
 
   @Public()
-  @Post('webhook/:gateway')
+  @Post('webhook/flow/:tenantCode')
+  @HttpCode(HttpStatus.OK)
   @ApiParam({
-    name: 'gateway',
-    example: 'webpay',
+    name: 'tenantCode',
+    example: 'coimsa',
     description:
-      'Pasarela de pago',
+      'Código del tenant configurado para recibir el callback de Flow',
   })
   @ApiOperation({
     summary:
-      'Registrar recepción de webhook',
-    })
-  async handleWebhook(
-    @Param('gateway')
-    gateway: string,
+      'Recibir callback de Flow y verificar el estado directamente con Flow',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Callback autenticado y registrado.',
+  })
+  async handleFlowWebhook(
+    @Param('tenantCode')
+    tenantCode: string,
     @Body()
     payload: Record<string, unknown>,
-    @CurrentTenant('id')
-    tenantId?: string,
   ) {
-    return this.paymentsService.handleWebhook(
-      gateway,
-      payload,
-      tenantId || '',
+    const token =
+      typeof payload.token === 'string'
+        ? payload.token
+        : '';
+
+    return this.paymentsService.handleFlowWebhook(
+      tenantCode,
+      token,
+    );
+  }
+
+  @Public()
+  @Post('webhook/mercadopago/:tenantCode')
+  @HttpCode(HttpStatus.OK)
+  @ApiParam({
+    name: 'tenantCode',
+    example: 'coimsa',
+    description:
+      'Código del tenant configurado para recibir webhooks de Mercado Pago',
+  })
+  @ApiOperation({
+    summary:
+      'Validar y registrar webhook firmado de Mercado Pago',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Webhook autenticado y registrado.',
+  })
+  async handleMercadoPagoWebhook(
+    @Param('tenantCode')
+    tenantCode: string,
+    @Headers('x-signature')
+    xSignature?: string,
+    @Headers('x-request-id')
+    xRequestId?: string,
+    @Query('data.id')
+    dataId?: string,
+    @Body()
+    payload?: Record<string, unknown>,
+  ) {
+    const bodyDataId =
+      payload &&
+      typeof payload.data === 'object' &&
+      payload.data !== null &&
+      typeof (payload.data as Record<string, unknown>).id ===
+        'string'
+        ? ((payload.data as Record<string, unknown>).id as string)
+        : undefined;
+
+    return this.paymentsService.handleMercadoPagoWebhook(
+      tenantCode,
+      xSignature || '',
+      xRequestId || '',
+      dataId || bodyDataId || '',
+      payload || {},
     );
   }
 

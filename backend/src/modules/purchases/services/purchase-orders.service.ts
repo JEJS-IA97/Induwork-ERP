@@ -20,70 +20,55 @@ export class PurchaseOrdersService {
       PurchaseOrderStatus.SENT,
       PurchaseOrderStatus.CANCELLED,
     ],
-
     [PurchaseOrderStatus.SENT]: [
       PurchaseOrderStatus.CONFIRMED,
       PurchaseOrderStatus.CANCELLED,
     ],
-
     [PurchaseOrderStatus.CONFIRMED]: [
       PurchaseOrderStatus.PARTIALLY_RECEIVED,
       PurchaseOrderStatus.RECEIVED,
       PurchaseOrderStatus.CANCELLED,
     ],
-
     [PurchaseOrderStatus.PARTIALLY_RECEIVED]: [
       PurchaseOrderStatus.RECEIVED,
       PurchaseOrderStatus.CANCELLED,
     ],
-
     [PurchaseOrderStatus.RECEIVED]: [],
-
     [PurchaseOrderStatus.CANCELLED]: [],
   };
 
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async create(
     dto: CreatePurchaseOrderDto,
     tenantId: string,
     userId: string,
   ) {
-    if (
-      !dto.items ||
-      dto.items.length === 0
-    ) {
+    if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException(
         'La orden de compra debe contener al menos un ítem.',
       );
     }
 
-    if (
-      dto.status &&
-      dto.status !==
-        PurchaseOrderStatus.RFQ
-    ) {
+    if (dto.status && dto.status !== PurchaseOrderStatus.RFQ) {
       throw new BadRequestException(
         'Una nueva orden de compra debe comenzar en estado RFQ.',
       );
     }
 
-    const supplier =
-      await this.prisma.customer.findFirst({
-        where: {
-          id: dto.supplierId,
-          tenantId,
-          isActive: true,
-          type: {
-            in: [
-              CustomerType.PROVEEDOR,
-              CustomerType.AMBOS,
-            ],
-          },
+    const supplier = await this.prisma.customer.findFirst({
+      where: {
+        id: dto.supplierId,
+        tenantId,
+        isActive: true,
+        type: {
+          in: [
+            CustomerType.PROVEEDOR,
+            CustomerType.AMBOS,
+          ],
         },
-      });
+      },
+    });
 
     if (!supplier) {
       throw new NotFoundException(
@@ -91,41 +76,30 @@ export class PurchaseOrdersService {
       );
     }
 
-    let poNumber =
-      dto.poNumber?.trim();
+    let poNumber = dto.poNumber?.trim();
 
     if (!poNumber) {
-      const count =
-        await this.prisma.purchaseOrder.count({
-          where: {
-            tenantId,
-          },
-        });
+      const count = await this.prisma.purchaseOrder.count({
+        where: { tenantId },
+      });
 
-      const year =
-        new Date().getFullYear();
-
-      poNumber =
-        `OC-${year}-${String(
-          count + 1,
-        ).padStart(4, '0')}`;
+      const year = new Date().getFullYear();
+      poNumber = `OC-${year}-${String(count + 1).padStart(4, '0')}`;
     }
 
     let subtotalAmount = 0;
     let taxAmount = 0;
-
     const itemsData = [];
 
     for (const item of dto.items) {
-      const product =
-        await this.prisma.product.findFirst({
-          where: {
-            id: item.productId,
-            tenantId,
-            isActive: true,
-            isArchived: false,
-          },
-        });
+      const product = await this.prisma.product.findFirst({
+        where: {
+          id: item.productId,
+          tenantId,
+          isActive: true,
+          isArchived: false,
+        },
+      });
 
       if (!product) {
         throw new NotFoundException(
@@ -136,16 +110,14 @@ export class PurchaseOrdersService {
       let variant = null;
 
       if (item.variantId) {
-        variant =
-          await this.prisma.productVariant.findFirst({
-            where: {
-              id: item.variantId,
-              tenantId,
-              productId:
-                product.id,
-              isActive: true,
-            },
-          });
+        variant = await this.prisma.productVariant.findFirst({
+          where: {
+            id: item.variantId,
+            tenantId,
+            productId: product.id,
+            isActive: true,
+          },
+        });
 
         if (!variant) {
           throw new NotFoundException(
@@ -154,32 +126,19 @@ export class PurchaseOrdersService {
         }
       }
 
-      const unitCost =
-        Math.round(
-          item.unitCost,
-        );
+      const unitCost = Math.round(item.unitCost);
 
-      if (
-        !Number.isInteger(
-          unitCost,
-        ) ||
-        unitCost < 0
-      ) {
+      if (!Number.isInteger(unitCost) || unitCost < 0) {
         throw new BadRequestException(
           `El costo del producto '${product.name}' es inválido.`,
         );
       }
 
       const itemTaxRate =
-        item.taxRate !==
-        undefined
-          ? item.taxRate
-          : 19;
+        item.taxRate !== undefined ? item.taxRate : 19;
 
       if (
-        !Number.isFinite(
-          itemTaxRate,
-        ) ||
+        !Number.isFinite(itemTaxRate) ||
         itemTaxRate < 0 ||
         itemTaxRate > 100
       ) {
@@ -188,109 +147,72 @@ export class PurchaseOrdersService {
         );
       }
 
-      const itemSubtotal =
-        Math.round(
-          item.quantity *
-            unitCost,
-        );
+      const itemSubtotal = Math.round(
+        item.quantity * unitCost,
+      );
+      const itemTax = Math.round(
+        itemSubtotal * (itemTaxRate / 100),
+      );
+      const itemTotal = itemSubtotal + itemTax;
 
-      const itemTax =
-        Math.round(
-          itemSubtotal *
-            (itemTaxRate / 100),
-        );
-
-      const itemTotal =
-        itemSubtotal +
-        itemTax;
-
-      subtotalAmount +=
-        itemSubtotal;
-
-      taxAmount +=
-        itemTax;
+      subtotalAmount += itemSubtotal;
+      taxAmount += itemTax;
 
       itemsData.push({
-        productId:
-          product.id,
-        variantId:
-          variant?.id ||
-          null,
-        productName:
-          product.orderName ||
-          product.name,
-        quantity:
-          item.quantity,
+        productId: product.id,
+        variantId: variant?.id || null,
+        productName: product.orderName || product.name,
+        quantity: item.quantity,
         unitCost,
-        taxRate:
-          itemTaxRate,
-        subtotal:
-          itemSubtotal,
-        total:
-          itemTotal,
+        taxRate: itemTaxRate,
+        subtotal: itemSubtotal,
+        total: itemTotal,
       });
     }
 
-    const totalAmount =
-      subtotalAmount +
-      taxAmount;
+    const totalAmount = subtotalAmount + taxAmount;
 
-    const po =
-      await this.prisma.purchaseOrder.create({
-        data: {
-          tenantId,
-          poNumber,
-          supplierId:
-            supplier.id,
-          status:
-            PurchaseOrderStatus.RFQ,
-          expectedDate:
-            dto.expectedDate
-              ? new Date(
-                  dto.expectedDate,
-                )
-              : null,
-          notes: dto.notes,
-          subtotalAmount,
-          taxAmount,
-          totalAmount,
-          createdById:
-            userId,
-          items: {
-            create:
-              itemsData,
+    const po = await this.prisma.purchaseOrder.create({
+      data: {
+        tenantId,
+        poNumber,
+        supplierId: supplier.id,
+        status: PurchaseOrderStatus.RFQ,
+        expectedDate: dto.expectedDate
+          ? new Date(dto.expectedDate)
+          : null,
+        notes: dto.notes,
+        subtotalAmount,
+        taxAmount,
+        totalAmount,
+        createdById: userId,
+        items: {
+          create: itemsData,
+        },
+      },
+      include: {
+        supplier: true,
+        items: {
+          include: {
+            product: true,
+            variant: true,
           },
         },
-        include: {
-          supplier: true,
-          items: {
-            include: {
-              product: true,
-              variant: true,
-            },
-          },
-        },
-      });
+      },
+    });
 
     await this.prisma.auditLog.create({
       data: {
         tenantId,
         userId,
-        action:
-          'CREATE_PURCHASE_ORDER',
-        entityName:
-          'PurchaseOrder',
-        entityId:
-          po.id,
+        action: 'CREATE_PURCHASE_ORDER',
+        entityName: 'PurchaseOrder',
+        entityId: po.id,
         newValues: {
-          poNumber:
-            po.poNumber,
-          supplier:
-            supplier.name,
-          totalAmount:
-            po.totalAmount,
-          status:
-            po.status,
+          poNumber: po.poNumber,
+          supplier: supplier.name,
+          totalAmount: po.totalAmount,
+          status: po.status,
         },
       },
     });
@@ -298,13 +220,9 @@ export class PurchaseOrdersService {
     return po;
   }
 
-  async findAll(
-    tenantId: string,
-  ) {
+  async findAll(tenantId: string) {
     return this.prisma.purchaseOrder.findMany({
-      where: {
-        tenantId,
-      },
+      where: { tenantId },
       include: {
         supplier: {
           select: {
@@ -318,52 +236,40 @@ export class PurchaseOrdersService {
         goodsReceipts: true,
         vendorBills: true,
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
-  async findOne(
-    id: string,
-    tenantId: string,
-  ) {
-    const po =
-      await this.prisma.purchaseOrder.findFirst({
-        where: {
-          id,
-          tenantId,
+  async findOne(id: string, tenantId: string) {
+    const po = await this.prisma.purchaseOrder.findFirst({
+      where: { id, tenantId },
+      include: {
+        supplier: true,
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
         },
-        include: {
-          supplier: true,
-          createdBy: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-            },
+        items: {
+          include: {
+            product: true,
+            variant: true,
           },
-          items: {
-            include: {
-              product: true,
-              variant: true,
-            },
-          },
-          goodsReceipts: {
-            include: {
-              items: true,
-            },
-          },
-          vendorBills:
-            true,
         },
-      });
+        goodsReceipts: {
+          include: {
+            items: true,
+          },
+        },
+        vendorBills: true,
+      },
+    });
 
     if (!po) {
-      throw new NotFoundException(
-        'Orden de compra no encontrada.',
-      );
+      throw new NotFoundException('Orden de compra no encontrada.');
     }
 
     return po;
@@ -375,69 +281,70 @@ export class PurchaseOrdersService {
     tenantId: string,
     userId: string,
   ) {
-    const po =
-      await this.findOne(
-        id,
+    return this.prisma.$transaction(async (tx) => {
+      const purchaseOrderLockKey = [
+        'PURCHASE_ORDER',
         tenantId,
-      );
+        id,
+      ].join(':');
 
-    if (
-      po.status === status
-    ) {
-      throw new BadRequestException(
-        `La orden de compra ya se encuentra en estado ${status}.`,
-      );
-    }
+      /*
+       * La misma clave es utilizada por GoodsReceiptsService para serializar
+       * cambios de estado y recepciones concurrentes sobre una misma OC.
+       */
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${purchaseOrderLockKey}, 0)
+        )
+      `;
 
-    const allowedNextStatuses =
-      this.allowedTransitions[
-        po.status
-      ];
-
-    if (
-      !allowedNextStatuses.includes(
-        status,
-      )
-    ) {
-      throw new BadRequestException(
-        `Transición de estado no permitida: ${po.status} → ${status}.`,
-      );
-    }
-
-    const updated =
-      await this.prisma.purchaseOrder.update({
+      const po = await tx.purchaseOrder.findFirst({
         where: {
-          id: po.id,
+          id,
+          tenantId,
         },
-        data: {
-          status,
-        },
+      });
+
+      if (!po) {
+        throw new NotFoundException('Orden de compra no encontrada.');
+      }
+
+      if (po.status === status) {
+        throw new BadRequestException(
+          `La orden de compra ya se encuentra en estado ${status}.`,
+        );
+      }
+
+      const allowedNextStatuses = this.allowedTransitions[po.status];
+
+      if (!allowedNextStatuses.includes(status)) {
+        throw new BadRequestException(
+          `Transición de estado no permitida: ${po.status} → ${status}.`,
+        );
+      }
+
+      const updatedOrder = await tx.purchaseOrder.update({
+        where: { id: po.id },
+        data: { status },
         include: {
           supplier: true,
           items: true,
         },
       });
 
-    await this.prisma.auditLog.create({
-      data: {
-        tenantId,
-        userId,
-        action:
-          'UPDATE_PURCHASE_ORDER_STATUS',
-        entityName:
-          'PurchaseOrder',
-        entityId:
-          po.id,
-        oldValues: {
-          status:
-            po.status,
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'UPDATE_PURCHASE_ORDER_STATUS',
+          entityName: 'PurchaseOrder',
+          entityId: po.id,
+          oldValues: { status: po.status },
+          newValues: { status },
         },
-        newValues: {
-          status,
-        },
-      },
-    });
+      });
 
-    return updated;
+      return updatedOrder;
+    });
   }
 }

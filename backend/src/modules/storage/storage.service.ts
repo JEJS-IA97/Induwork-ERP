@@ -4,6 +4,7 @@ import {
   NotFoundException,
   Logger,
   ServiceUnavailableException,
+  ConflictException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -11,7 +12,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
-  HeadObjectCommand
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaService } from '../../database/prisma.service';
@@ -58,60 +59,101 @@ export class StorageService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {
-      this.storageMockMode =
-    this.configService.get<string>(
-      'STORAGE_MOCK_MODE',
-    ) === 'true' &&
-    !this.isProduction;
+    this.isProduction =
+      this.configService.get<string>('NODE_ENV') ===
+      'production';
 
-  const accessKeyId =
-    this.configService.get<string>(
-      'S3_ACCESS_KEY_ID',
-    );
+    this.storageMockMode =
+      this.configService
+        .get<string>('STORAGE_MOCK_MODE')
+        ?.trim()
+        .toLowerCase() === 'true' &&
+      !this.isProduction;
 
-  const secretAccessKey =
-    this.configService.get<string>(
-      'S3_SECRET_ACCESS_KEY',
-    );
+    this.bucketName =
+      this.configService
+        .get<string>('S3_BUCKET_NAME')
+        ?.trim() || '';
 
-  if (
-    this.isProduction &&
-    (
-      !accessKeyId ||
-      !secretAccessKey ||
-      !this.bucketName ||
-      !this.publicUrl
-    )
-  ) {
-    throw new Error(
-      'La configuración de almacenamiento S3/R2 está incompleta en producción.',
-    );
+    const configuredPublicUrl =
+      this.configService
+        .get<string>('S3_PUBLIC_URL')
+        ?.trim() || '';
+
+    this.publicUrl = (
+      configuredPublicUrl ||
+      (this.storageMockMode
+        ? 'http://localhost:4000/mock-storage'
+        : '')
+    ).replace(/\/+$/, '');
+
+    const endpoint =
+      this.configService
+        .get<string>('S3_ENDPOINT')
+        ?.trim() || '';
+
+    const region =
+      this.configService
+        .get<string>('S3_REGION')
+        ?.trim() || 'auto';
+
+    const accessKeyId =
+      this.configService
+        .get<string>('S3_ACCESS_KEY_ID')
+        ?.trim() || '';
+
+    const secretAccessKey =
+      this.configService
+        .get<string>('S3_SECRET_ACCESS_KEY')
+        ?.trim() || '';
+
+    if (!this.publicUrl) {
+      throw new Error(
+        'S3_PUBLIC_URL es obligatorio para el módulo de almacenamiento.',
+      );
+    }
+
+    if (
+      !this.storageMockMode &&
+      (!this.bucketName || !endpoint)
+    ) {
+      throw new Error(
+        'La configuración de almacenamiento S3/R2 está incompleta. Configure S3_BUCKET_NAME y S3_ENDPOINT o habilite STORAGE_MOCK_MODE únicamente en desarrollo.',
+      );
+    }
+
+    if (
+      this.isProduction &&
+      (!accessKeyId || !secretAccessKey)
+    ) {
+      throw new Error(
+        'S3_ACCESS_KEY_ID y S3_SECRET_ACCESS_KEY son obligatorios para almacenamiento S3/R2 en producción.',
+      );
+    }
+
+    this.s3Client = new S3Client({
+      region,
+      endpoint: endpoint || undefined,
+      ...(accessKeyId && secretAccessKey
+        ? {
+            credentials: {
+              accessKeyId,
+              secretAccessKey,
+            },
+          }
+        : {}),
+      forcePathStyle: true,
+    });
   }
 
-  this.s3Client = new S3Client({
-    region,
-    endpoint: endpoint || undefined,
-    ...(accessKeyId && secretAccessKey
-      ? {
-          credentials: {
-            accessKeyId,
-            secretAccessKey,
-          },
-        }
-      : {}),
-    forcePathStyle: true,
-  });
-  }
-
-  /**
-   * Valida tipo de archivo y tamaño según la categoría.
-   */
   private validateFileConstraints(
     fileType: string,
     fileSize: number,
     category: StorageCategory,
   ) {
-    const normalizedType = fileType.toLowerCase();
+    const normalizedType = fileType
+      .trim()
+      .toLowerCase();
 
     if (category === StorageCategory.PRODUCT_IMAGE) {
       if (!this.ALLOWED_IMAGE_MIMES.includes(normalizedType)) {
@@ -125,7 +167,6 @@ export class StorageService {
           'La imagen supera el límite máximo permitido de 12 MB.',
         );
       }
-
       return;
     }
 
@@ -144,7 +185,6 @@ export class StorageService {
           'El documento supera el límite máximo permitido de 5 MB.',
         );
       }
-
       return;
     }
 
@@ -160,7 +200,6 @@ export class StorageService {
           'La firma digital no debe exceder 2 MB.',
         );
       }
-
       return;
     }
 
@@ -171,16 +210,10 @@ export class StorageService {
     }
   }
 
-  /**
-   * Construye la URL pública asociada al fileKey.
-   */
   private buildPublicFileUrl(fileKey: string): string {
     return `${this.publicUrl}/${fileKey}`;
   }
 
-  /**
-   * Valida que el fileKey pertenezca al tenant autenticado.
-   */
   private validateFileKeyForTenant(
     fileKey: string,
     tenantCode: string,
@@ -188,7 +221,8 @@ export class StorageService {
     if (
       !fileKey ||
       fileKey.includes('..') ||
-      fileKey.includes('\\')
+      fileKey.includes('\\') ||
+      /[\u0000-\u001F\u007F]/.test(fileKey)
     ) {
       throw new BadRequestException(
         'El fileKey no es válido.',
@@ -204,9 +238,89 @@ export class StorageService {
     }
   }
 
-  /**
-   * Genera una Presigned URL de subida directa a S3 / Cloudflare R2.
-   */
+  private async verifyUploadedObject(
+    fileKey: string,
+    expectedFileType: string,
+    expectedFileSize: number,
+  ) {
+    try {
+      const object = await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.bucketName,
+          Key: fileKey,
+        }),
+      );
+
+      const actualFileSize = object.ContentLength;
+      const actualFileType =
+        object.ContentType
+          ?.split(';')[0]
+          ?.trim()
+          .toLowerCase();
+
+      if (
+        actualFileSize === undefined ||
+        actualFileSize !== expectedFileSize
+      ) {
+        throw new BadRequestException(
+          'El tamaño del archivo almacenado no coincide con el tamaño declarado.',
+        );
+      }
+
+      if (
+        !actualFileType ||
+        actualFileType !==
+          expectedFileType.trim().toLowerCase()
+      ) {
+        throw new BadRequestException(
+          'El tipo MIME del archivo almacenado no coincide con el tipo declarado.',
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      const awsError = error as {
+        name?: string;
+        $metadata?: {
+          httpStatusCode?: number;
+        };
+      };
+
+      if (
+        awsError.name === 'NotFound' ||
+        awsError.name === 'NoSuchKey' ||
+        awsError.$metadata?.httpStatusCode === 404
+      ) {
+        throw new NotFoundException(
+          'El archivo no existe en el almacenamiento.',
+        );
+      }
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Error desconocido';
+      const stack =
+        error instanceof Error
+          ? error.stack
+          : undefined;
+
+      this.logger.error(
+        `Error verificando objeto ${fileKey}: ${message}`,
+        stack,
+      );
+
+      throw new ServiceUnavailableException(
+        'No fue posible verificar el archivo en el almacenamiento.',
+      );
+    }
+  }
+
   async generatePresignedUploadUrl(
     dto: GeneratePresignedUrlDto,
     tenantId: string,
@@ -243,56 +357,47 @@ export class StorageService {
       `${dto.category.toLowerCase()}/` +
       `${timestamp}-${cleanFileName}`;
 
-    const command = new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: fileKey,
-      ContentType: dto.fileType,
-      Metadata: {
-        tenantId,
-        userId: userId || 'anonymous',
-        category: dto.category,
-        originalName: dto.fileName,
-      },
-    });
-
+    const expiresInSeconds = 900;
     let uploadUrl: string;
 
-    const expiresInSeconds = 900;
+    if (this.storageMockMode) {
+      uploadUrl =
+        `${this.publicUrl}/mock-upload/${fileKey}` +
+        '?signature=mock_presigned_token';
+    } else {
+      const command = new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: fileKey,
+        ContentType: dto.fileType,
+      });
 
-    try {
-      uploadUrl = await getSignedUrl(
-        this.s3Client,
-        command,
-        {
-          expiresIn: expiresInSeconds,
-        },
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Error desconocido';
+      try {
+        uploadUrl = await getSignedUrl(
+          this.s3Client,
+          command,
+          {
+            expiresIn: expiresInSeconds,
+          },
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Error desconocido';
+        const stack =
+          error instanceof Error
+            ? error.stack
+            : undefined;
 
-      const stack =
-        error instanceof Error
-          ? error.stack
-          : undefined;
+        this.logger.error(
+          `Error generando Presigned URL: ${message}`,
+          stack,
+        );
 
-      this.logger.error(
-        `Error generando Presigned URL: ${message}`,
-        stack,
-      );
-
-      if (this.isProduction) {
         throw new ServiceUnavailableException(
           'El almacenamiento de archivos no está disponible.',
         );
       }
-
-      // Mock únicamente para desarrollo.
-      uploadUrl =
-        `${this.publicUrl}/mock-upload/${fileKey}` +
-        '?signature=mock_presigned_token';
     }
 
     const publicFileUrl =
@@ -316,9 +421,6 @@ export class StorageService {
     };
   }
 
-  /**
-   * Confirma la subida y asocia el archivo al producto.
-   */
   async confirmUpload(
     dto: ConfirmUploadDto,
     tenantId: string,
@@ -357,7 +459,29 @@ export class StorageService {
       );
     }
 
+    if (!this.storageMockMode) {
+      await this.verifyUploadedObject(
+        dto.fileKey,
+        dto.fileType,
+        dto.fileSize,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
+      const existingFile =
+        await tx.storageFile.findFirst({
+          where: {
+            tenantId,
+            fileUrl: dto.fileUrl,
+          },
+        });
+
+      if (existingFile) {
+        throw new ConflictException(
+          'El archivo ya fue confirmado anteriormente.',
+        );
+      }
+
       let product = null;
 
       if (dto.productId) {
@@ -413,9 +537,7 @@ export class StorageService {
           });
 
           await tx.product.update({
-            where: {
-              id: product.id,
-            },
+            where: { id: product.id },
             data: {
               imageUrls: [
                 ...currentImages,
@@ -477,14 +599,6 @@ export class StorageService {
     });
   }
 
-  /**
-   * Genera una URL temporal y segura de descarga.
-   *
-   * El archivo debe:
-   * 1. Pertenecer al tenant autenticado.
-   * 2. Tener un fileKey dentro de su prefijo.
-   * 3. Existir como StorageFile registrado.
-   */
   async generatePresignedDownloadUrl(
     fileKey: string,
     tenantId: string,
@@ -524,6 +638,15 @@ export class StorageService {
       );
     }
 
+    if (this.storageMockMode) {
+      return {
+        downloadUrl:
+          `${this.publicUrl}/mock-download/${fileKey}` +
+          '?signature=mock_download_token',
+        expiresInSeconds: 3600,
+      };
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: fileKey,
@@ -548,7 +671,6 @@ export class StorageService {
         error instanceof Error
           ? error.message
           : 'Error desconocido';
-
       const stack =
         error instanceof Error
           ? error.stack
@@ -565,23 +687,13 @@ export class StorageService {
     }
   }
 
-  /**
-   * Lista todos los archivos registrados del tenant.
-   */
   async findAll(tenantId: string) {
     return this.prisma.storageFile.findMany({
-      where: {
-        tenantId,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
-  /**
-   * Elimina un archivo del bucket y de la base de datos.
-   */
   async delete(
     id: string,
     tenantId: string,
@@ -601,49 +713,47 @@ export class StorageService {
       );
     }
 
-    try {
-      const tenant =
-        await this.prisma.tenant.findUnique({
-          where: {
-            id: tenantId,
-          },
-          select: {
-            code: true,
-          },
-        });
+    if (!this.storageMockMode) {
+      try {
+        const tenant =
+          await this.prisma.tenant.findUnique({
+            where: { id: tenantId },
+            select: { code: true },
+          });
 
-      if (
-        tenant &&
-        file.fileUrl.startsWith(
-          `${this.publicUrl}/`,
-        )
-      ) {
-        const fileKey =
-          file.fileUrl.substring(
-            `${this.publicUrl}/`.length,
+        if (
+          tenant &&
+          file.fileUrl.startsWith(
+            `${this.publicUrl}/`,
+          )
+        ) {
+          const fileKey =
+            file.fileUrl.substring(
+              `${this.publicUrl}/`.length,
+            );
+
+          this.validateFileKeyForTenant(
+            fileKey,
+            tenant.code,
           );
 
-        this.validateFileKeyForTenant(
-          fileKey,
-          tenant.code,
-        );
+          await this.s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: this.bucketName,
+              Key: fileKey,
+            }),
+          );
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Error desconocido';
 
-        await this.s3Client.send(
-          new DeleteObjectCommand({
-            Bucket: this.bucketName,
-            Key: fileKey,
-          }),
+        this.logger.warn(
+          `No se pudo eliminar el objeto de S3/R2: ${message}`,
         );
       }
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Error desconocido';
-
-      this.logger.warn(
-        `No se pudo eliminar el objeto de S3/R2: ${message}`,
-      );
     }
 
     await this.prisma.auditLog.create({
@@ -661,9 +771,7 @@ export class StorageService {
     });
 
     return this.prisma.storageFile.delete({
-      where: {
-        id: file.id,
-      },
+      where: { id: file.id },
     });
   }
 }
