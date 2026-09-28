@@ -639,6 +639,18 @@ export class PaymentsService {
             );
           }
 
+          const orderLockKey = [
+            'PAYMENT_ORDER',
+            tenantId,
+            buyOrder,
+          ].join(':');
+
+          await tx.$queryRaw`
+            SELECT pg_advisory_xact_lock(
+              hashtextextended(${orderLockKey}, 0)
+            )
+          `;
+
           const order =
             await tx.order.findFirst({
               where: {
@@ -1258,115 +1270,154 @@ export class PaymentsService {
     createPaymentDto: CreatePaymentDto,
     tenantId: string,
   ) {
-    const invoice =
-      await this.prisma.invoice.findFirst({
-        where: {
-          id:
-            createPaymentDto.invoiceId,
-          tenantId,
-        },
-        include: {
-          payments: true,
-        },
-      });
-
-    if (!invoice) {
-      throw new NotFoundException(
-        'Factura no encontrada para esta empresa.',
-      );
-    }
-
-    if (
-      createPaymentDto.amount <=
-      0
-    ) {
+    if (!Number.isInteger(createPaymentDto.amount) || createPaymentDto.amount <= 0) {
       throw new BadRequestException(
-        'El monto del pago debe ser mayor a cero.',
-      );
-    }
-
-    const amount =
-      Math.round(
-        createPaymentDto.amount,
-      );
-
-    const previousPaymentsTotal =
-      invoice.payments.reduce(
-        (acc, curr) =>
-          acc +
-          Math.round(
-            Number(
-              curr.amount,
-            ),
-          ),
-        0,
-      );
-
-    const invoiceTotal =
-      Math.round(
-        Number(
-          invoice.totalAmount,
-        ),
-      );
-
-    const remaining =
-      invoiceTotal -
-      previousPaymentsTotal;
-
-    if (
-      remaining <=
-      0
-    ) {
-      throw new ConflictException(
-        'La factura ya está completamente pagada.',
-      );
-    }
-
-    if (
-      amount >
-      remaining
-    ) {
-      throw new BadRequestException(
-        `El pago excede el saldo pendiente de la factura. Saldo restante: $${remaining.toLocaleString('es-CL')}.`,
+        'El monto del pago debe ser un número entero mayor a cero.',
       );
     }
 
     const transactionRef =
-      createPaymentDto.transactionRef
-        ?.trim() ||
+      createPaymentDto.transactionRef?.trim() ||
       null;
 
-    if (
-      transactionRef
-    ) {
-      const existingPayment =
-        await this.prisma.payment.findFirst({
-          where: {
-            tenantId,
-            transactionRef,
-          },
-        });
+    const invoiceLockKey = [
+      'PAYMENT_INVOICE',
+      tenantId,
+      createPaymentDto.invoiceId,
+    ].join(':');
 
-      if (
-        existingPayment
-      ) {
-        throw new ConflictException(
-          'El comprobante de pago ya fue registrado.',
-        );
-      }
-    }
+    const transactionRefLockKey = transactionRef
+      ? [
+          'PAYMENT_TRANSACTION_REF',
+          tenantId,
+          transactionRef,
+        ].join(':')
+      : null;
 
     return this.prisma.$transaction(
       async (tx) => {
+        /*
+         * Serializa los pagos sobre la misma factura. El saldo se vuelve a
+         * consultar dentro de la misma transacción después del bloqueo, por lo
+         * que dos solicitudes concurrentes no pueden aprobar el mismo saldo.
+         */
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${invoiceLockKey}, 0)
+          )
+        `;
+
+        /*
+         * También serializa el mismo comprobante/transacción cuando se usa en
+         * solicitudes concurrentes sobre facturas diferentes.
+         */
+        if (transactionRefLockKey) {
+          await tx.$queryRaw`
+            SELECT pg_advisory_xact_lock(
+              hashtextextended(${transactionRefLockKey}, 0)
+            )
+          `;
+        }
+
+        const invoice =
+          await tx.invoice.findFirst({
+            where: {
+              id: createPaymentDto.invoiceId,
+              tenantId,
+            },
+          });
+
+        if (!invoice) {
+          throw new NotFoundException(
+            'Factura no encontrada para esta empresa.',
+          );
+        }
+
+        if (
+          invoice.status ===
+          InvoiceStatus.VOID
+        ) {
+          throw new BadRequestException(
+            'No se puede registrar un pago sobre una factura anulada.',
+          );
+        }
+
+        if (transactionRef) {
+          const existingPayment =
+            await tx.payment.findFirst({
+              where: {
+                tenantId,
+                transactionRef,
+              },
+            });
+
+          if (existingPayment) {
+            throw new ConflictException(
+              'El comprobante de pago ya fue registrado.',
+            );
+          }
+        }
+
+        const paymentsAggregate =
+          await tx.payment.aggregate({
+            where: {
+              tenantId,
+              invoiceId: invoice.id,
+              status: PaymentStatus.COMPLETED,
+            },
+            _sum: {
+              amount: true,
+            },
+          });
+
+        const previousPaymentsTotal = Math.round(
+          Number(
+            paymentsAggregate._sum.amount ||
+              0,
+          ),
+        );
+
+        const amount = Math.round(
+          createPaymentDto.amount,
+        );
+
+        const invoiceTotal = Math.round(
+          Number(invoice.totalAmount),
+        );
+
+        if (
+          !Number.isInteger(invoiceTotal) ||
+          invoiceTotal <= 0
+        ) {
+          throw new BadRequestException(
+            'La factura tiene un total inválido.',
+          );
+        }
+
+        const remaining =
+          invoiceTotal -
+          previousPaymentsTotal;
+
+        if (remaining <= 0) {
+          throw new ConflictException(
+            'La factura ya está completamente pagada.',
+          );
+        }
+
+        if (amount > remaining) {
+          throw new BadRequestException(
+            `El pago excede el saldo pendiente de la factura. Saldo restante: $${remaining.toLocaleString('es-CL')}.`,
+          );
+        }
+
         const payment =
           await tx.payment.create({
             data: {
               tenantId,
-              invoiceId:
-                invoice.id,
+              invoiceId: invoice.id,
               amount,
               paymentMethod:
-                createPaymentDto.paymentMethod ||
+                createPaymentDto.paymentMethod?.trim() ||
                 'TRANSFERENCIA',
               transactionRef,
               status:
@@ -1378,23 +1429,23 @@ export class PaymentsService {
           previousPaymentsTotal +
           amount;
 
-        if (
-          totalPaid >=
-          invoiceTotal
-        ) {
-          await tx.invoice.update({
-            where: {
-              id:
-                invoice.id,
-            },
-            data: {
-              paymentStatus:
-                PaymentStatus.COMPLETED,
-            },
-          });
-        }
+        await tx.invoice.update({
+          where: {
+            id: invoice.id,
+          },
+          data: {
+            paymentStatus:
+              totalPaid >= invoiceTotal
+                ? PaymentStatus.COMPLETED
+                : PaymentStatus.PENDING,
+          },
+        });
 
         return payment;
+      },
+      {
+        maxWait: 5000,
+        timeout: 10000,
       },
     );
   }

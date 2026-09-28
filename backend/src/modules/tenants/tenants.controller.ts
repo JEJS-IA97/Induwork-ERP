@@ -15,27 +15,32 @@ import { TenantsService } from './tenants.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/constants/roles.enum';
-import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../common/types/express';
 
 @ApiTags('Tenants')
+@ApiBearerAuth('access-token')
 @Controller('tenants')
 export class TenantsController {
   constructor(
     private readonly tenantsService: TenantsService,
   ) {}
 
-  @Public()
   @Get()
+  @Roles(Role.SYSTEM_ADMIN)
   @ApiOperation({
     summary:
-      'Listar empresas disponibles',
+      'Listar todas las empresas activas (Solo SYSTEM_ADMIN)',
   })
   @ApiResponse({
     status: 200,
     description:
       'Listado de empresas activas.',
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Solo SYSTEM_ADMIN puede consultar el listado global de empresas.',
   })
   async findAll() {
     return this.tenantsService.findAll();
@@ -43,7 +48,6 @@ export class TenantsController {
 
   @Get(':identifier')
   @Roles(Role.ADMIN)
-  @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
       'Obtener detalle de la empresa del usuario',
@@ -72,7 +76,6 @@ export class TenantsController {
 
   @Post()
   @Roles(Role.SYSTEM_ADMIN)
-  @ApiBearerAuth('access-token')
   @ApiOperation({
     summary:
       'Crear nueva empresa en el ERP (Solo SYSTEM_ADMIN)',
