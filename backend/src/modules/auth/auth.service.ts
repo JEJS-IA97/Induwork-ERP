@@ -4,6 +4,7 @@ import {
   ConflictException,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -31,23 +32,41 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new UnauthorizedException('Credenciales inválidas (email o contraseña incorrectos).');
+      throw new UnauthorizedException(
+        'Credenciales inválidas (email o contraseña incorrectos).',
+      );
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException('La cuenta de usuario se encuentra desactivada.');
+      throw new UnauthorizedException(
+        'La cuenta de usuario se encuentra desactivada.',
+      );
     }
 
     if (user.tenant && !user.tenant.isActive) {
-      throw new UnauthorizedException('La empresa/tenant asociada se encuentra inactiva.');
+      throw new UnauthorizedException(
+        'La empresa/tenant asociada se encuentra inactiva.',
+      );
     }
 
-    const isPasswordValid = await argon2.verify(user.passwordHash, password);
+    const isPasswordValid = await argon2.verify(
+      user.passwordHash,
+      password,
+    );
+
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Credenciales inválidas (email o contraseña incorrectos).');
+      throw new UnauthorizedException(
+        'Credenciales inválidas (email o contraseña incorrectos).',
+      );
     }
 
-    const tokens = await this.generateTokens(user.id, user.email, user.role as Role, user.tenantId, user.tenant?.code);
+    const tokens = await this.generateTokens(
+      user.id,
+      user.email,
+      user.role as Role,
+      user.tenantId,
+      user.tenant?.code,
+    );
 
     return {
       user: {
@@ -72,16 +91,39 @@ export class AuthService {
   async register(registerDto: RegisterDto, defaultTenantId?: string) {
     const { email, password, firstName, lastName } = registerDto;
 
+    const isProduction =
+      this.configService.get<string>('NODE_ENV') ===
+      'production';
+
+    const publicRegistrationEnabled =
+      this.configService.get<string>(
+        'PUBLIC_REGISTRATION_ENABLED',
+      )?.trim().toLowerCase() === 'true' ||
+      (!isProduction &&
+        !this.configService.get<string>(
+          'PUBLIC_REGISTRATION_ENABLED',
+        ));
+
+    if (!publicRegistrationEnabled) {
+      throw new ForbiddenException(
+        'El registro público de usuarios está deshabilitado.',
+      );
+    }
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
     });
 
     if (existingUser) {
-      throw new ConflictException('El correo electrónico ya se encuentra registrado.');
+      throw new ConflictException(
+        'El correo electrónico ya se encuentra registrado.',
+      );
     }
 
-        const publicRegistrationTenantCode =
-      this.configService.get<string>('PUBLIC_REGISTRATION_TENANT_CODE');
+    const publicRegistrationTenantCode =
+      this.configService.get<string>(
+        'PUBLIC_REGISTRATION_TENANT_CODE',
+      );
 
     if (!publicRegistrationTenantCode) {
       throw new BadRequestException(
@@ -91,7 +133,9 @@ export class AuthService {
 
     const tenant = await this.prisma.tenant.findFirst({
       where: {
-        code: publicRegistrationTenantCode.trim().toLowerCase(),
+        code: publicRegistrationTenantCode
+          .trim()
+          .toLowerCase(),
         isActive: true,
       },
     });
@@ -102,7 +146,11 @@ export class AuthService {
       );
     }
 
-    const tenantIdToAssign = tenant.id;
+    const tenantIdToAssign =
+      defaultTenantId &&
+      defaultTenantId === tenant.id
+        ? defaultTenantId
+        : tenant.id;
 
     const passwordHash = await argon2.hash(password);
 
@@ -143,21 +191,29 @@ export class AuthService {
     };
   }
 
-    async refreshTokens(refreshTokenDto: RefreshTokenDto) {
+  async refreshTokens(refreshTokenDto: RefreshTokenDto) {
     const { refreshToken } = refreshTokenDto;
 
-    let payload: { sub?: string };
+    let payload: {
+      sub?: string;
+    };
 
     try {
       payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
+        secret: this.configService.getOrThrow<string>(
+          'JWT_REFRESH_SECRET',
+        ),
       });
     } catch {
-      throw new UnauthorizedException('Refresh token expirado o inválido.');
+      throw new UnauthorizedException(
+        'Refresh token expirado o inválido.',
+      );
     }
 
     if (!payload.sub) {
-      throw new UnauthorizedException('Refresh token inválido.');
+      throw new UnauthorizedException(
+        'Refresh token inválido.',
+      );
     }
 
     const user = await this.prisma.user.findUnique({
@@ -166,7 +222,9 @@ export class AuthService {
     });
 
     if (!user || !user.isActive) {
-      throw new UnauthorizedException('Usuario no válido o inactivo.');
+      throw new UnauthorizedException(
+        'Usuario no válido o inactivo.',
+      );
     }
 
     if (user.tenant && !user.tenant.isActive) {
@@ -177,18 +235,24 @@ export class AuthService {
 
     const now = new Date();
 
-    const activeTokens = await this.prisma.refreshToken.findMany({
-      where: {
-        userId: user.id,
-        revokedAt: null,
-        expiresAt: { gt: now },
-      },
-    });
+    const activeTokens =
+      await this.prisma.refreshToken.findMany({
+        where: {
+          userId: user.id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+      });
 
     let matchedTokenId: string | null = null;
 
     for (const storedToken of activeTokens) {
-      if (await argon2.verify(storedToken.tokenHash, refreshToken)) {
+      if (
+        await argon2.verify(
+          storedToken.tokenHash,
+          refreshToken,
+        )
+      ) {
         matchedTokenId = storedToken.id;
         break;
       }
@@ -200,16 +264,17 @@ export class AuthService {
       );
     }
 
-    const revoked = await this.prisma.refreshToken.updateMany({
-      where: {
-        id: matchedTokenId,
-        userId: user.id,
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: now,
-      },
-    });
+    const revoked =
+      await this.prisma.refreshToken.updateMany({
+        where: {
+          id: matchedTokenId,
+          userId: user.id,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: now,
+        },
+      });
 
     if (revoked.count !== 1) {
       throw new UnauthorizedException(
@@ -237,7 +302,9 @@ export class AuthService {
       },
     });
 
-    return { message: 'Sesión cerrada correctamente.' };
+    return {
+      message: 'Sesión cerrada correctamente.',
+    };
   }
 
   private async generateTokens(
@@ -256,30 +323,41 @@ export class AuthService {
     };
 
     const accessTokenSecret =
-      this.configService.getOrThrow<string>('JWT_SECRET');
+      this.configService.getOrThrow<string>(
+        'JWT_SECRET',
+      );
 
     const accessTokenExpiresIn =
-      this.configService.get<string>('JWT_EXPIRES_IN') || '15m';
+      this.configService.get<string>(
+        'JWT_EXPIRES_IN',
+      ) || '15m';
 
     const refreshTokenSecret =
-      this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
+      this.configService.getOrThrow<string>(
+        'JWT_REFRESH_SECRET',
+      );
 
     const refreshTokenExpiresIn =
-      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d';
+      this.configService.get<string>(
+        'JWT_REFRESH_EXPIRES_IN',
+      ) || '7d';
 
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(payload, {
-        secret: accessTokenSecret,
-        expiresIn: accessTokenExpiresIn,
-      }),
-      this.jwtService.signAsync(payload, {
-        secret: refreshTokenSecret,
-        expiresIn: refreshTokenExpiresIn,
-      }),
-    ]);
+    const [accessToken, refreshToken] =
+      await Promise.all([
+        this.jwtService.signAsync(payload, {
+          secret: accessTokenSecret,
+          expiresIn: accessTokenExpiresIn,
+        }),
+        this.jwtService.signAsync(payload, {
+          secret: refreshTokenSecret,
+          expiresIn: refreshTokenExpiresIn,
+        }),
+      ]);
 
     // Store hashed refresh token in database
-    const tokenHash = await argon2.hash(refreshToken);
+    const tokenHash = await argon2.hash(
+      refreshToken,
+    );
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 

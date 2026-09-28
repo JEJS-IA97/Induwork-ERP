@@ -11,60 +11,72 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const logger =
-    new Logger('Bootstrap');
+  const logger = new Logger('Bootstrap');
+  const app = await NestFactory.create(
+    AppModule,
+  );
 
-  const app =
-    await NestFactory.create(
-      AppModule,
-    );
+  const isProduction =
+    process.env.NODE_ENV === 'production';
 
   /*
-   * Swagger solo se habilita cuando se solicita explícitamente.
-   * En producción nunca se activa por defecto.
+   * Swagger solo se habilita fuera de producción y cuando se solicita
+   * explícitamente. La validación de configuración también bloquea su
+   * activación en producción.
    */
   const swaggerEnabled =
-    process.env.SWAGGER_ENABLED ===
-    'true';
+    !isProduction &&
+    process.env.SWAGGER_ENABLED === 'true';
 
   // 1. SEGURIDAD: Helmet para protección de cabeceras HTTP
   app.use(
     helmet({
       crossOriginEmbedderPolicy: false,
       contentSecurityPolicy: {
-        directives: {
-          defaultSrc: [`'self'`],
-          styleSrc: [
-            `'self'`,
-            `'unsafe-inline'`,
-          ],
-          imgSrc: [
-            `'self'`,
-            'data:',
-            'validator.swagger.io',
-          ],
-          scriptSrc: [
-            `'self'`,
-            'https:',
-            `'unsafe-inline'`,
-          ],
-        },
+        directives: isProduction
+          ? {
+              defaultSrc: [`'self'`],
+              baseUri: [`'self'`],
+              objectSrc: [`'none'`],
+              frameAncestors: [`'self'`],
+              formAction: [`'self'`],
+              styleSrc: [`'self'`],
+              imgSrc: [`'self'`, 'data:'],
+              scriptSrc: [`'self'`],
+              connectSrc: [`'self'`],
+            }
+          : {
+              defaultSrc: [`'self'`],
+              styleSrc: [
+                `'self'`,
+                `'unsafe-inline'`,
+              ],
+              imgSrc: [
+                `'self'`,
+                'data:',
+                'validator.swagger.io',
+              ],
+              scriptSrc: [
+                `'self'`,
+                'https:',
+                `'unsafe-inline'`,
+              ],
+            },
       },
     }),
   );
 
-  // 2. SEGURIDAD: CORS restringido por whitelist en todos los entornos
+  // 2. SEGURIDAD: CORS restringido por whitelist
   const corsWhitelistEnv =
     process.env.CORS_ORIGINS || '';
 
-  const corsWhitelist =
-    corsWhitelistEnv
-      ? corsWhitelistEnv
-          .split(',')
-          .map((origin) =>
-            origin.trim(),
-          )
-          .filter(Boolean)
+  const corsWhitelist = corsWhitelistEnv
+    ? corsWhitelistEnv
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+    : isProduction
+      ? []
       : [
           'http://localhost:3000',
           'http://localhost:5173',
@@ -74,15 +86,10 @@ async function bootstrap() {
         ];
 
   app.enableCors({
-    origin: (
-      origin,
-      callback,
-    ) => {
+    origin: (origin, callback) => {
       if (
         !origin ||
-        corsWhitelist.includes(
-          origin,
-        )
+        corsWhitelist.includes(origin)
       ) {
         callback(null, true);
         return;
@@ -109,9 +116,7 @@ async function bootstrap() {
       'x-tenant-id',
       'x-company-id',
     ],
-    exposedHeaders: [
-      'x-tenant-id',
-    ],
+    exposedHeaders: ['x-tenant-id'],
     credentials: true,
   });
 
@@ -288,8 +293,7 @@ permanezca simulado, incompleto o pendiente de configuración.
   }
 
   // 6. Iniciar servidor
-  const port =
-    process.env.PORT || 4000;
+  const port = process.env.PORT || 4000;
 
   await app.listen(port);
 
