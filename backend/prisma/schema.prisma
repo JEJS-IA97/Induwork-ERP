@@ -12,7 +12,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -391,7 +391,7 @@ model Product {
   
   // Imágenes
   mainImageUrl     String?
-  imageUrls        String[] @default([]) // Array de URLs directas para compatibilidad rápida
+  imageUrls        Json?    // Array JSON de URLs directas compatible con MySQL/MariaDB
   
   // Estados de Ciclo de Vida y Publicación
   isActive         Boolean  @default(true)
