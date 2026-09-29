@@ -27,6 +27,8 @@ import { StorageModule } from './modules/storage/storage.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PricingModule } from './modules/pricing/pricing.module';
+import { PurchasesModule } from './modules/purchases/purchases.module';
+import { LogisticsModule } from './modules/logistics/logistics.module';
 
 function getEnvString(
   config: Record<string, unknown>,
@@ -307,6 +309,8 @@ function validateConfiguration(
     PaymentsModule,
     NotificationsModule,
     PricingModule,
+    PurchasesModule,
+    LogisticsModule,
   ],
   providers: [
     // Global Throttler Rate Limiting

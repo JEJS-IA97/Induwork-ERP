@@ -32,6 +32,17 @@ async function bootstrap() {
   app.use(
     helmet({
       crossOriginEmbedderPolicy: false,
+      // HSTS: fuerza HTTPS en navegadores — solo activo en producción
+      // OWASP ASVS 3.4.2 / CIS Controls 9
+      hsts: isProduction
+        ? {
+            maxAge: 31536000,       // 1 año
+            includeSubDomains: true,
+            preload: true,
+          }
+        : false,
+      // Evita que la app sea embebida en iframes de terceros (clickjacking)
+      frameguard: { action: 'sameorigin' },
       contentSecurityPolicy: {
         directives: isProduction
           ? {
@@ -238,7 +249,7 @@ permanezca simulado, incompleto o pendiente de configuración.
         )
         .addTag(
           'Inventory',
-          'Control de stock y movimientos',
+          'Control de stock, Kardex, Listas de Materiales / Kits (BOM) y Trazabilidad 360° de Lotes/Series',
         )
         .addTag(
           'Pricing & Promotions',
@@ -251,6 +262,14 @@ permanezca simulado, incompleto o pendiente de configuración.
         .addTag(
           'Invoicing & Payments',
           'Facturación y pagos',
+        )
+        .addTag(
+          'Purchases',
+          'Compras, recepciones, 3-Way Matching y reabastecimiento automático',
+        )
+        .addTag(
+          'Logistics',
+          'Guías de Despacho (DTE 52) y transferencias entre bodegas',
         )
         .addTag(
           'Storage',
